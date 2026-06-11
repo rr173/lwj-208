@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
@@ -130,3 +130,124 @@ class UploadFastaRequest(BaseModel):
 
 class UploadGffRequest(BaseModel):
     gff_text: str
+
+
+class SampleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    species: str = Field(..., min_length=1, max_length=255)
+    collection_date: Optional[datetime] = None
+    notes: Optional[str] = ""
+
+
+class SampleUpdate(BaseModel):
+    name: Optional[str] = None
+    species: Optional[str] = None
+    collection_date: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
+class SampleOut(BaseModel):
+    id: int
+    name: str
+    species: str
+    collection_date: Optional[datetime] = None
+    notes: str
+    created_at: datetime
+    updated_at: datetime
+    alignment_count: int = 0
+    variant_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class SampleDetail(SampleOut):
+    linked_alignment_ids: List[int] = []
+
+
+class LinkAlignmentsRequest(BaseModel):
+    alignment_ids: List[int] = Field(..., min_length=1)
+
+
+class SpectrumVariantOut(BaseModel):
+    reference_name: str
+    ref_pos: int
+    variant_type: str
+    ref_base: str
+    alt_base: str
+    feature_type: Optional[str] = None
+    gene_name: Optional[str] = None
+    impact: Optional[str] = None
+    consequence: Optional[str] = None
+    aa_ref: Optional[str] = None
+    aa_alt: Optional[str] = None
+    source_alignment_ids: List[int] = []
+
+    class Config:
+        from_attributes = True
+
+
+class SampleSpectrumOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    total_variants: int
+    variants: List[SpectrumVariantOut] = []
+
+
+class PopulationFrequencyEntry(BaseModel):
+    ref_pos: int
+    variant_type: str
+    ref_base: str
+    alt_base: str
+    frequency: float
+    sample_count: int
+    total_samples: int
+    impact: Optional[str] = None
+    gene_name: Optional[str] = None
+
+
+class PopulationFrequencyOut(BaseModel):
+    reference_name: str
+    total_samples_analyzed: int
+    total_variant_sites: int
+    entries: List[PopulationFrequencyEntry] = []
+
+
+class CompareSummary(BaseModel):
+    only_a_count: int
+    only_b_count: int
+    shared_count: int
+    same_site_diff_alt_count: int
+    jaccard_similarity: float
+
+
+class CompareResultOut(BaseModel):
+    sample_a_id: int
+    sample_a_name: str
+    sample_b_id: int
+    sample_b_name: str
+    summary: CompareSummary
+    only_in_a: List[SpectrumVariantOut] = []
+    only_in_b: List[SpectrumVariantOut] = []
+    shared: List[SpectrumVariantOut] = []
+    same_site_different_alt: List[Dict[str, Any]] = []
+
+
+class HotspotEntry(BaseModel):
+    region_start: int
+    region_end: int
+    region_length: int
+    gene_name: str
+    feature_type: Optional[str] = None
+    variant_count: int
+    sample_count: int
+    density_per_100bp: float
+    top_variant: Optional[PopulationFrequencyEntry] = None
+
+
+class HotspotAnalysisOut(BaseModel):
+    reference_name: str
+    total_samples_analyzed: int
+    threshold_per_100bp: float
+    hotspot_count: int
+    hotspots: List[HotspotEntry] = []
