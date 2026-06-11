@@ -1,4 +1,5 @@
 import hashlib
+import time
 from typing import Tuple, List, Dict, Optional
 
 
@@ -6,15 +7,23 @@ MATCH_SCORE = 2
 MISMATCH_SCORE = -1
 GAP_SCORE = -2
 
+ALIGNMENT_TIMEOUT_SECONDS = 60
+
+
+class AlignmentTimeoutError(Exception):
+    """Raised when alignment takes longer than the timeout."""
+    pass
+
 
 def sequence_hash(seq: str) -> str:
     return hashlib.md5(seq.encode()).hexdigest()
 
 
-def smith_waterman(query: str, reference: str) -> Dict:
+def smith_waterman(query: str, reference: str, timeout: int = ALIGNMENT_TIMEOUT_SECONDS) -> Dict:
     """
     Smith-Waterman local alignment algorithm (optimized).
     Returns alignment result with score, positions, cigar, and alignment strings.
+    Raises AlignmentTimeoutError if computation exceeds timeout seconds.
     """
     n = len(query)
     m = len(reference)
@@ -46,7 +55,17 @@ def smith_waterman(query: str, reference: str) -> Dict:
     mismatch_score = MISMATCH_SCORE
     gap_score = GAP_SCORE
 
+    start_time = time.time()
+    check_interval = max(1, n // 10)
+
     for i in range(1, n + 1):
+        if i % check_interval == 0:
+            if time.time() - start_time > timeout:
+                raise AlignmentTimeoutError(
+                    f"Alignment timed out after {timeout} seconds "
+                    f"({n} x {m} = {n*m:,} cells)"
+                )
+
         qi = query_bytes[i - 1]
         score_curr[0] = 0
         diag = 0
@@ -172,7 +191,7 @@ def _build_cigar(align_query: List[str], align_ref: List[str]) -> str:
     return "".join(cigar_parts)
 
 
-def find_seed_positions(query: str, reference: str, seed_size: int = 15, max_seeds: int = 20) -> List[int]:
+def find_seed_positions(query: str, reference: str, seed_size: int = 15, max_seeds: int = 10) -> List[int]:
     """Find seed positions in reference using k-mer matching for optimization."""
     n = len(query)
     m = len(reference)
@@ -181,23 +200,25 @@ def find_seed_positions(query: str, reference: str, seed_size: int = 15, max_see
         return [0]
 
     step = max(1, (n - seed_size + 1) // max_seeds)
-    seed_kmers = []
+    query_kmers = []
+    seen = set()
     for i in range(0, n - seed_size + 1, step):
         kmer = query[i:i + seed_size]
-        seed_kmers.append((i, kmer))
-
-    kmer_positions = {}
-    for i in range(m - seed_size + 1):
-        kmer = reference[i:i + seed_size]
-        if kmer not in kmer_positions:
-            kmer_positions[kmer] = []
-        kmer_positions[kmer].append(i)
+        if kmer not in seen:
+            seen.add(kmer)
+            query_kmers.append((i, kmer))
+        if len(query_kmers) >= max_seeds:
+            break
 
     seed_hits = []
-    for query_offset, kmer in seed_kmers:
-        if kmer in kmer_positions:
-            for ref_pos in kmer_positions[kmer]:
-                seed_hits.append(ref_pos - query_offset)
+    for query_offset, kmer in query_kmers:
+        start = 0
+        while True:
+            pos = reference.find(kmer, start)
+            if pos == -1:
+                break
+            seed_hits.append(pos - query_offset)
+            start = pos + 1
 
     if not seed_hits:
         return []
@@ -205,16 +226,18 @@ def find_seed_positions(query: str, reference: str, seed_size: int = 15, max_see
     seed_hits.sort()
 
     clusters = []
-    current_cluster = [seed_hits[0]]
+    current_cluster_start = seed_hits[0]
+    current_cluster_end = seed_hits[0]
     cluster_range = n * 2
 
     for pos in seed_hits[1:]:
-        if pos - current_cluster[-1] <= cluster_range:
-            current_cluster.append(pos)
+        if pos - current_cluster_end <= cluster_range:
+            current_cluster_end = pos
         else:
-            clusters.append((current_cluster[0], current_cluster[-1]))
-            current_cluster = [pos]
-    clusters.append((current_cluster[0], current_cluster[-1]))
+            clusters.append((current_cluster_start, current_cluster_end))
+            current_cluster_start = pos
+            current_cluster_end = pos
+    clusters.append((current_cluster_start, current_cluster_end))
 
     result = []
     for start, end in clusters:
@@ -223,7 +246,7 @@ def find_seed_positions(query: str, reference: str, seed_size: int = 15, max_see
     return result
 
 
-def optimized_smith_waterman(query: str, reference: str) -> Dict:
+def optimized_smith_waterman(query: str, reference: str, timeout: int = ALIGNMENT_TIMEOUT_SECONDS) -> Dict:
     """
     Optimized Smith-Waterman using seed finding + banded DP around seeds.
     Falls back to full DP for short sequences.
@@ -232,10 +255,12 @@ def optimized_smith_waterman(query: str, reference: str) -> Dict:
     m = len(reference)
 
     if n == 0 or m == 0:
-        return smith_waterman(query, reference)
+        return smith_waterman(query, reference, timeout)
 
-    if n * m <= 10000000:
-        return smith_waterman(query, reference)
+    if n * m <= 5000000:
+        return smith_waterman(query, reference, timeout)
+
+    start_time = time.time()
 
     seed_size = min(20, max(11, n // 20))
     seed_positions = find_seed_positions(query, reference, seed_size)
@@ -245,23 +270,29 @@ def optimized_smith_waterman(query: str, reference: str) -> Dict:
         seed_positions = find_seed_positions(query, reference, seed_size)
 
     if not seed_positions:
-        return smith_waterman(query, reference)
+        remaining = max(1, timeout - int(time.time() - start_time))
+        return smith_waterman(query, reference, remaining)
 
     best_result = None
     best_score = -1
 
-    band_extension = max(n, 100)
+    band_extension = max(n // 2, 50)
 
     for seed_pos in seed_positions:
+        elapsed = time.time() - start_time
+        if elapsed > timeout:
+            raise AlignmentTimeoutError(
+                f"Alignment timed out after {timeout} seconds "
+                f"({n} x {m} = {n*m:,} cells, seed-based optimization)"
+            )
+
         region_start = max(0, seed_pos - band_extension)
         region_end = min(m, seed_pos + n + band_extension)
         region_len = region_end - region_start
 
-        if region_len <= n * 3:
-            continue
-
         ref_subset = reference[region_start:region_end]
-        result = smith_waterman(query, ref_subset)
+        remaining = max(1, timeout - int(time.time() - start_time))
+        result = smith_waterman(query, ref_subset, remaining)
 
         if result["score"] > best_score:
             best_score = result["score"]
@@ -270,6 +301,7 @@ def optimized_smith_waterman(query: str, reference: str) -> Dict:
             best_result["ref_end"] += region_start
 
     if best_result is None or best_score < MATCH_SCORE * 5:
-        return smith_waterman(query, reference)
+        remaining = max(1, timeout - int(time.time() - start_time))
+        return smith_waterman(query, reference, remaining)
 
     return best_result

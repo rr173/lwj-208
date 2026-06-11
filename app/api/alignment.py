@@ -4,6 +4,7 @@ from typing import List
 from app import schemas
 from app.database import get_db
 from app.services import genome_service
+from app.alignment.smith_waterman import AlignmentTimeoutError
 
 router = APIRouter(prefix="/api/alignment", tags=["alignment"])
 
@@ -32,7 +33,11 @@ def align_sequence(request: schemas.AlignRequest, db: Session = Depends(get_db))
     if len(request.query_sequence) > 1000:
         raise HTTPException(status_code=400, detail="Query sequence exceeds 1000 base limit")
 
-    results = genome_service.align_query_all_references(db, request.query_sequence)
+    try:
+        results = genome_service.align_query_all_references(db, request.query_sequence)
+    except AlignmentTimeoutError as e:
+        raise HTTPException(status_code=408, detail=str(e))
+
     return [alignment_to_out(r) for r in results]
 
 
