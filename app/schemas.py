@@ -251,3 +251,100 @@ class HotspotAnalysisOut(BaseModel):
     threshold_per_100bp: float
     hotspot_count: int
     hotspots: List[HotspotEntry] = []
+
+
+class DistanceMatrixRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=3, max_length=200)
+    reference_name: str = Field(..., min_length=1)
+
+
+DistanceWarning = Dict[str, Any]
+
+
+class DistanceMatrixOut(BaseModel):
+    sample_ids: List[int]
+    sample_names: List[str]
+    distance_matrix: List[List[float]]
+    warnings: List[DistanceWarning] = []
+
+
+class PhyloTreeRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=3, max_length=200)
+    reference_name: str = Field(..., min_length=1)
+    tree_method: str = Field("nj", pattern="^(nj|upgma)$")
+    bootstrap_replicates: int = Field(0, ge=0, le=1000)
+    with_molecular_clock: bool = False
+
+
+class PhyloTreeNode(BaseModel):
+    name: Optional[str] = None
+    children: List["PhyloTreeNode"] = []
+    branch_length: Optional[float] = None
+    bootstrap_support: Optional[float] = None
+    divergence_time: Optional[float] = None
+    is_leaf: bool = False
+
+
+PhyloTreeNode.model_rebuild()
+
+
+class MolecularClockInfo(BaseModel):
+    slope: float
+    intercept: float
+    r_squared: float
+    rate: float
+    outlier_samples: List[str] = []
+    warning: Optional[str] = None
+
+
+class PhyloTreeOut(BaseModel):
+    task_id: str
+    status: str
+    newick_tree: Optional[str] = None
+    tree_json: Optional[PhyloTreeNode] = None
+    sample_ids: List[int] = []
+    sample_names: List[str] = []
+    tree_method: str
+    bootstrap_replicates: int
+    distance_matrix: Optional[List[List[float]]] = []
+    distance_warnings: List[DistanceWarning] = []
+    molecular_clock: Optional[MolecularClockInfo] = None
+    is_stale: bool = False
+    created_at: Optional[datetime] = None
+    progress: Optional[int] = None
+    total: Optional[int] = None
+    progress_message: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class PhyloTaskStatusOut(BaseModel):
+    task_id: str
+    status: str
+    progress: int
+    total: int
+    progress_message: str
+    is_async: bool
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+
+class TreeCompareRequest(BaseModel):
+    task_id_a: str
+    task_id_b: str
+
+
+class InconsistentBranch(BaseModel):
+    split_a: List[str]
+    split_b: List[str]
+
+
+class TreeCompareOut(BaseModel):
+    rf_distance: int
+    normalized_rf_distance: float
+    matching_splits: int
+    total_splits: int
+    weighted_branch_length_distance: float
+    inconsistent_branches: List[InconsistentBranch] = []
+    sample_names_a: List[str] = []
+    sample_names_b: List[str] = []

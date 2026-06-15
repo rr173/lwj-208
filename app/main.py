@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.api import reference, alignment, batch, stats, sample
+from app.api import reference, alignment, batch, stats, sample, phylogeny
 from app.api.websocket import router as ws_router
 from app.sample_data import init_sample_data
 from app.services.batch_service import task_manager
@@ -30,6 +30,7 @@ app.include_router(alignment.router)
 app.include_router(batch.router)
 app.include_router(stats.router)
 app.include_router(sample.router)
+app.include_router(phylogeny.router)
 app.include_router(ws_router)
 
 

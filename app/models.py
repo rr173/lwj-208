@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, JSON, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, DateTime, Float, JSON, UniqueConstraint, Index, Boolean
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base
@@ -205,3 +205,66 @@ class PopulationFrequencyMeta(Base):
     reference_id = Column(Integer, ForeignKey("reference_sequences.id"), unique=True, nullable=False)
     total_samples_analyzed = Column(Integer, nullable=False, default=0)
     last_updated = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PhyloTreeTask(Base):
+    __tablename__ = "phylo_tree_tasks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(String, unique=True, index=True, nullable=False)
+    status = Column(String, default="pending")
+    sample_ids = Column(JSON, nullable=False)
+    reference_name = Column(String, nullable=False)
+    tree_method = Column(String, default="nj")
+    bootstrap_replicates = Column(Integer, default=0)
+    with_molecular_clock = Column(Boolean, default=False)
+    total_steps = Column(Integer, default=100)
+    completed_steps = Column(Integer, default=0)
+    progress_message = Column(String, default="")
+    result_id = Column(Integer, ForeignKey("phylo_tree_results.id"), nullable=True)
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    is_async = Column(Boolean, default=False)
+
+    result = relationship("PhyloTreeResult", back_populates="task", uselist=False)
+
+
+class PhyloTreeResult(Base):
+    __tablename__ = "phylo_tree_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    sample_ids = Column(JSON, nullable=False)
+    reference_name = Column(String, nullable=False)
+    tree_method = Column(String, nullable=False)
+    bootstrap_replicates = Column(Integer, default=0)
+    with_molecular_clock = Column(Boolean, default=False)
+    newick_tree = Column(Text, nullable=False)
+    tree_json = Column(JSON, nullable=False)
+    distance_matrix = Column(JSON, nullable=False)
+    sample_names = Column(JSON, nullable=False)
+    distance_warnings = Column(JSON, nullable=True)
+    molecular_clock_info = Column(JSON, nullable=True)
+    data_hash = Column(String, nullable=False)
+    is_stale = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    task = relationship("PhyloTreeTask", back_populates="result", uselist=False)
+
+
+class TreeComparisonResult(Base):
+    __tablename__ = "tree_comparison_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    task_id_a = Column(String, nullable=False)
+    task_id_b = Column(String, nullable=False)
+    rf_distance = Column(Integer, nullable=False)
+    normalized_rf_distance = Column(Float, nullable=False)
+    matching_splits = Column(Integer, nullable=False)
+    total_splits = Column(Integer, nullable=False)
+    weight_dist = Column(Float, nullable=False)
+    inconsistent_branches = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_
 from datetime import datetime
 from app import models, schemas
+from app.services.phylogeny_service import invalidate_tree_results_for_samples
 
 
 def _variant_five_tuple_key(v) -> Tuple:
@@ -50,8 +51,10 @@ def update_sample(db: Session, sample: models.Sample, data: schemas.SampleUpdate
 
 
 def delete_sample(db: Session, sample: models.Sample) -> None:
+    sample_id = sample.id
     db.delete(sample)
     db.commit()
+    invalidate_tree_results_for_samples(db, [sample_id])
 
 
 def sample_to_out(db: Session, sample: models.Sample, with_detail: bool = False) -> schemas.SampleOut:
@@ -155,6 +158,7 @@ def rebuild_sample_spectrum(db: Session, sample_id: int) -> None:
 
     db.commit()
     _invalidate_frequency_cache_for_sample(db, sample_id)
+    invalidate_tree_results_for_samples(db, [sample_id])
 
 
 def link_alignments_to_sample(
