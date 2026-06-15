@@ -519,6 +519,16 @@ class PrimerDesignRequest(BaseModel):
     target_end: int = Field(..., ge=0)
 
 
+class BatchPrimerDesignItem(BaseModel):
+    target_start: int = Field(..., ge=0)
+    target_end: int = Field(..., ge=0)
+
+
+class BatchPrimerDesignRequest(BaseModel):
+    reference_name: str = Field(..., min_length=1)
+    targets: List[BatchPrimerDesignItem] = Field(..., min_length=1, max_length=20)
+
+
 class OffTargetSite(BaseModel):
     ref_start: int
     ref_end: int
@@ -561,3 +571,45 @@ class PrimerDesignResult(BaseModel):
     flank_size: int
     primer_pairs: List[PrimerPairOut]
     cached: bool = False
+
+
+class PrimerTmStats(BaseModel):
+    all_fwd_tm: List[float]
+    all_rev_tm: List[float]
+    fwd_tm_std: float
+    rev_tm_std: float
+    combined_tm_std: float
+
+
+class BatchPrimerDesignResultItem(BaseModel):
+    target_index: int
+    target_start: int
+    target_end: int
+    best_primer_pair: Optional[PrimerPairOut] = None
+    success: bool
+    error_message: Optional[str] = None
+    cached: bool = False
+
+
+class BatchPrimerDesignResult(BaseModel):
+    reference_name: str
+    total_targets: int
+    success_count: int
+    failure_count: int
+    results: List[BatchPrimerDesignResultItem]
+    tm_consistency: Optional[PrimerTmStats] = None
+
+
+class PrimerDesignHistoryItem(BaseModel):
+    id: int
+    reference_name: str
+    target_start: int
+    target_end: int
+    best_primer_pair: Optional[PrimerPairOut] = None
+    created_at: datetime
+
+
+class PrimerDesignHistoryList(BaseModel):
+    reference_name: str
+    total_records: int
+    history: List[PrimerDesignHistoryItem]

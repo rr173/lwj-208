@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 from typing import List, Dict, Tuple, Optional
 
 from app.alignment.smith_waterman import smith_waterman
@@ -313,3 +314,54 @@ def save_primer_result(db, ref_name: str, target_start: int, target_end: int, re
         )
         db.add(entry)
     db.commit()
+
+
+def _std(values: List[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    variance = sum((v - mean) ** 2 for v in values) / len(values)
+    return round(math.sqrt(variance), 4)
+
+
+def compute_tm_consistency(best_pairs: List[Dict]) -> Optional[Dict]:
+    valid_pairs = [p for p in best_pairs if p is not None]
+    if not valid_pairs:
+        return None
+
+    all_fwd_tm = [p["forward_primer"]["tm"] for p in valid_pairs]
+    all_rev_tm = [p["reverse_primer"]["tm"] for p in valid_pairs]
+    combined_tm = all_fwd_tm + all_rev_tm
+
+    return {
+        "all_fwd_tm": all_fwd_tm,
+        "all_rev_tm": all_rev_tm,
+        "fwd_tm_std": _std(all_fwd_tm),
+        "rev_tm_std": _std(all_rev_tm),
+        "combined_tm_std": _std(combined_tm),
+    }
+
+
+def get_primer_design_history(db, reference_name: str) -> List[Dict]:
+    from app.models import PrimerDesignCache
+    records = (
+        db.query(PrimerDesignCache)
+        .filter(PrimerDesignCache.reference_name == reference_name)
+        .order_by(PrimerDesignCache.created_at.desc())
+        .all()
+    )
+
+    result = []
+    for record in records:
+        result_data = json.loads(record.result_json)
+        primer_pairs = result_data.get("primer_pairs", [])
+        best_pair = primer_pairs[0] if primer_pairs else None
+        result.append({
+            "id": record.id,
+            "reference_name": record.reference_name,
+            "target_start": record.target_start,
+            "target_end": record.target_end,
+            "best_primer_pair": best_pair,
+            "created_at": record.created_at,
+        })
+    return result
