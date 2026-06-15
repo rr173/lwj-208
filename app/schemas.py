@@ -463,3 +463,41 @@ class ScoreStatsOut(BaseModel):
     sample_name: str
     total_variants: int
     classification_distribution: List[ClassificationCount]
+
+
+class LDPair(BaseModel):
+    pos_i: int
+    pos_j: int
+    d: float
+    d_prime: float
+    r_squared: float
+
+
+class LDMatrixOut(BaseModel):
+    reference_name: str
+    total_samples: int
+    snp_count: int
+    snp_positions: List[int]
+    ld_pairs: List[LDPair]
+    is_stale: bool
+    created_at: Optional[datetime] = None
+
+
+class HaplotypeBlock(BaseModel):
+    block_index: int
+    start_pos: int
+    end_pos: int
+    snp_count: int
+    snp_positions: List[int]
+    avg_r_squared: float
+
+
+class HaplotypeBlockOut(BaseModel):
+    reference_name: str
+    r2_threshold: float
+    total_samples: int
+    snp_count: int
+    block_count: int
+    blocks: List[HaplotypeBlock]
+    is_stale: bool
+    created_at: Optional[datetime] = None

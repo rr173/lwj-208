@@ -305,3 +305,46 @@ class TreeComparisonResult(Base):
     weight_dist = Column(Float, nullable=False)
     inconsistent_branches = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class LDMatrixResult(Base):
+    __tablename__ = "ld_matrix_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    reference_name = Column(String, nullable=False)
+    reference_id = Column(Integer, ForeignKey("reference_sequences.id"), nullable=False)
+    total_samples = Column(Integer, nullable=False, default=0)
+    snp_count = Column(Integer, nullable=False, default=0)
+    snp_positions = Column(JSON, nullable=False, default=list)
+    ld_matrix = Column(JSON, nullable=False, default=list)
+    data_hash = Column(String, nullable=False)
+    is_stale = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_ld_matrix_ref", "reference_id"),
+    )
+
+
+class HaplotypeBlockResult(Base):
+    __tablename__ = "haplotype_block_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    reference_name = Column(String, nullable=False)
+    reference_id = Column(Integer, ForeignKey("reference_sequences.id"), nullable=False)
+    r2_threshold = Column(Float, nullable=False)
+    total_samples = Column(Integer, nullable=False, default=0)
+    snp_count = Column(Integer, nullable=False, default=0)
+    block_count = Column(Integer, nullable=False, default=0)
+    blocks = Column(JSON, nullable=False, default=list)
+    data_hash = Column(String, nullable=False)
+    is_stale = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_haplotype_block_ref", "reference_id"),
+    )
