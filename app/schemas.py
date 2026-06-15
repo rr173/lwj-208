@@ -613,3 +613,87 @@ class PrimerDesignHistoryList(BaseModel):
     reference_name: str
     total_records: int
     history: List[PrimerDesignHistoryItem]
+
+
+class VariantTracingRequest(BaseModel):
+    reference_name: str = Field(..., min_length=1)
+    ref_pos: int = Field(..., ge=1)
+    variant_type: str = Field(..., min_length=1)
+    ref_base: str = Field(..., min_length=1)
+    alt_base: str = Field(..., min_length=1)
+
+
+class VariantTracingSampleEntry(BaseModel):
+    sample_id: int
+    sample_name: str
+    collection_date: Optional[datetime] = None
+    is_earliest: bool = False
+    is_candidate_source: bool = False
+    date_unknown: bool = False
+
+
+class VariantTracingOut(BaseModel):
+    reference_name: str
+    ref_pos: int
+    variant_type: str
+    ref_base: str
+    alt_base: str
+    total_carrier_samples: int
+    timeline: List[VariantTracingSampleEntry] = []
+
+
+class TransmissionChainRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=3, max_length=200)
+
+
+class TransmissionNodeOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    collection_date: Optional[datetime] = None
+    variant_count: int
+    date_unknown: bool = False
+
+
+class TransmissionEdgeOut(BaseModel):
+    source_id: int
+    source_name: str
+    target_id: int
+    target_name: str
+    new_variants: List[SpectrumVariantOut] = []
+
+
+class TransmissionChainOut(BaseModel):
+    sample_ids: List[int]
+    total_nodes: int
+    total_edges: int
+    nodes: List[TransmissionNodeOut] = []
+    edges: List[TransmissionEdgeOut] = []
+    excluded_no_date: List[int] = []
+
+
+class ClusteringRequest(BaseModel):
+    reference_name: str = Field(..., min_length=1)
+    similarity_threshold: float = Field(0.7, ge=0.0, le=1.0)
+
+
+class ClusterMemberOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    collection_date: Optional[datetime] = None
+    variant_count: int
+
+
+class ClusterOut(BaseModel):
+    cluster_index: int
+    member_count: int
+    members: List[ClusterMemberOut] = []
+    shared_variants: List[SpectrumVariantOut] = []
+    avg_jaccard: float
+
+
+class ClusteringOut(BaseModel):
+    reference_name: str
+    total_samples: int
+    similarity_threshold: float
+    cluster_count: int
+    clusters: List[ClusterOut] = []
