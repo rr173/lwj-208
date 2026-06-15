@@ -477,8 +477,13 @@ class LDMatrixOut(BaseModel):
     reference_name: str
     total_samples: int
     snp_count: int
+    original_snp_count: int
+    filtered_snp_count: int
     snp_positions: List[int]
     ld_pairs: List[LDPair]
+    start: Optional[int] = None
+    end: Optional[int] = None
+    min_maf: Optional[float] = None
     is_stale: bool
     created_at: Optional[datetime] = None
 
@@ -497,7 +502,12 @@ class HaplotypeBlockOut(BaseModel):
     r2_threshold: float
     total_samples: int
     snp_count: int
+    original_snp_count: int
+    filtered_snp_count: int
     block_count: int
     blocks: List[HaplotypeBlock]
+    start: Optional[int] = None
+    end: Optional[int] = None
+    min_maf: Optional[float] = None
     is_stale: bool
     created_at: Optional[datetime] = None

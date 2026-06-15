@@ -1,5 +1,6 @@
 from app.ld.ld_calculator import compute_ld_pair, compute_ld_matrix
 from app.ld.haplotype_blocks import find_haplotype_blocks
+from app.services.ld_service import _compute_snp_maf, _filter_snps
 
 
 def test_ld_calculation():
@@ -154,11 +155,139 @@ def test_haplotype_blocks_all_pairs_check():
     print("\nAll-pairs check test passed!")
 
 
+def test_maf_calculation():
+    print("\n=== Testing MAF Calculation ===")
+    
+    sample_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    
+    genotypes_by_sample = {
+        1: {100: True, 200: True, 300: True},
+        2: {100: True, 200: True, 300: True},
+        3: {100: True, 200: False, 300: False},
+        4: {100: True, 200: False, 300: False},
+        5: {100: False, 200: False, 300: False},
+        6: {100: False, 200: False, 300: False},
+        7: {100: False, 200: False, 300: False},
+        8: {100: False, 200: False, 300: False},
+        9: {100: False, 200: False, 300: False},
+        10: {100: False, 200: False, 300: False},
+    }
+    
+    maf_100 = _compute_snp_maf(100, sample_ids, genotypes_by_sample)
+    print(f"SNP at 100 (4/10 variant): MAF = {maf_100:.4f} (expected 0.4000)")
+    assert abs(maf_100 - 0.4) < 0.001, f"Expected MAF 0.4, got {maf_100}"
+    
+    maf_200 = _compute_snp_maf(200, sample_ids, genotypes_by_sample)
+    print(f"SNP at 200 (2/10 variant): MAF = {maf_200:.4f} (expected 0.2000)")
+    assert abs(maf_200 - 0.2) < 0.001, f"Expected MAF 0.2, got {maf_200}"
+    
+    maf_300 = _compute_snp_maf(300, sample_ids, genotypes_by_sample)
+    print(f"SNP at 300 (2/10 variant): MAF = {maf_300:.4f} (expected 0.2000)")
+    assert abs(maf_300 - 0.2) < 0.001, f"Expected MAF 0.2, got {maf_300}"
+    
+    maf_rare = _compute_snp_maf(400, sample_ids, genotypes_by_sample)
+    print(f"SNP at 400 (0/10 variant): MAF = {maf_rare:.4f} (expected 0.0000)")
+    assert abs(maf_rare - 0.0) < 0.001, f"Expected MAF 0.0, got {maf_rare}"
+    
+    sample_ids_2 = [1, 2, 3, 4, 5]
+    genotypes_by_sample_2 = {
+        1: {500: True},
+        2: {500: True},
+        3: {500: True},
+        4: {500: True},
+        5: {500: True},
+    }
+    maf_all_variant = _compute_snp_maf(500, sample_ids_2, genotypes_by_sample_2)
+    print(f"SNP at 500 (5/5 variant): MAF = {maf_all_variant:.4f} (expected 0.0000)")
+    assert abs(maf_all_variant - 0.0) < 0.001, f"Expected MAF 0.0 (all variant), got {maf_all_variant}"
+    
+    print("\nMAF calculation tests passed!")
+
+
+def test_snp_filtering():
+    print("\n=== Testing SNP Filtering ===")
+    
+    sample_ids = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    snp_positions = [100, 200, 300, 400, 500, 600]
+    
+    genotypes_by_sample = {}
+    for sid in sample_ids:
+        genotypes_by_sample[sid] = {}
+    
+    genotypes_by_sample[1][100] = True
+    genotypes_by_sample[2][100] = True
+    genotypes_by_sample[1][200] = True
+    genotypes_by_sample[1][300] = True
+    genotypes_by_sample[2][300] = True
+    genotypes_by_sample[3][300] = True
+    genotypes_by_sample[4][300] = True
+    for sid in sample_ids[:5]:
+        genotypes_by_sample[sid][400] = True
+    for sid in sample_ids:
+        genotypes_by_sample[sid][500] = True
+    
+    print("\nTest 1: No filtering")
+    filtered, count = _filter_snps(sample_ids, snp_positions, genotypes_by_sample)
+    print(f"  Original: {len(snp_positions)}, Filtered: {len(filtered)}, Removed: {count}")
+    assert count == 0, f"Expected 0 removed, got {count}"
+    assert len(filtered) == len(snp_positions), f"Expected {len(snp_positions)} SNPs, got {len(filtered)}"
+    
+    print("\nTest 2: Region filtering (start=250)")
+    filtered, count = _filter_snps(sample_ids, snp_positions, genotypes_by_sample, start=250)
+    print(f"  Original: {len(snp_positions)}, Filtered: {len(filtered)}, Removed: {count}")
+    print(f"  Filtered positions: {filtered}")
+    assert count == 2, f"Expected 2 removed, got {count}"
+    assert 100 not in filtered
+    assert 200 not in filtered
+    assert 300 in filtered
+    
+    print("\nTest 3: Region filtering (end=450)")
+    filtered, count = _filter_snps(sample_ids, snp_positions, genotypes_by_sample, end=450)
+    print(f"  Original: {len(snp_positions)}, Filtered: {len(filtered)}, Removed: {count}")
+    print(f"  Filtered positions: {filtered}")
+    assert count == 2, f"Expected 2 removed, got {count}"
+    assert 500 not in filtered
+    assert 600 not in filtered
+    assert 400 in filtered
+    
+    print("\nTest 4: Region filtering (start=250, end=450)")
+    filtered, count = _filter_snps(sample_ids, snp_positions, genotypes_by_sample, start=250, end=450)
+    print(f"  Original: {len(snp_positions)}, Filtered: {len(filtered)}, Removed: {count}")
+    print(f"  Filtered positions: {filtered}")
+    assert count == 4, f"Expected 4 removed, got {count}"
+    assert filtered == [300, 400], f"Expected [300, 400], got {filtered}"
+    
+    print("\nTest 5: MAF filtering (min_maf=0.3)")
+    filtered, count = _filter_snps(sample_ids, snp_positions, genotypes_by_sample, min_maf=0.3)
+    print(f"  Original: {len(snp_positions)}, Filtered: {len(filtered)}, Removed: {count}")
+    print(f"  Filtered positions: {filtered}")
+    assert 100 not in filtered, "SNP 100 (MAF 0.2) should be filtered out"
+    assert 200 not in filtered, "SNP 200 (MAF 0.1) should be filtered out"
+    assert 300 in filtered, "SNP 300 (MAF 0.4) should be kept"
+    assert 400 in filtered, "SNP 400 (MAF 0.5) should be kept"
+    assert 500 not in filtered, "SNP 500 (MAF 0.0) should be filtered out"
+    
+    print("\nTest 6: Combined region and MAF filtering")
+    filtered, count = _filter_snps(
+        sample_ids, snp_positions, genotypes_by_sample,
+        start=250, end=450, min_maf=0.3
+    )
+    print(f"  Original: {len(snp_positions)}, Filtered: {len(filtered)}, Removed: {count}")
+    print(f"  Filtered positions: {filtered}")
+    assert 300 in filtered, "SNP 300 should pass both filters"
+    assert 400 in filtered, "SNP 400 should pass both filters"
+    assert len(filtered) == 2, f"Expected 2 SNPs, got {len(filtered)}"
+    
+    print("\nSNP filtering tests passed!")
+
+
 if __name__ == "__main__":
     test_ld_calculation()
     test_ld_matrix()
     test_haplotype_blocks()
     test_haplotype_blocks_all_pairs_check()
+    test_maf_calculation()
+    test_snp_filtering()
     print("\n" + "=" * 50)
     print("ALL TESTS PASSED!")
     print("=" * 50)
