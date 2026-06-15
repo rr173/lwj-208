@@ -150,6 +150,13 @@ def compute_distance_matrix_endpoint(
         db, sorted_ids, ref.id
     )
     
+    if not all_positions:
+        raise ValueError(
+            "No SNP variant data found for the selected samples on reference "
+            f"'{request.reference_name}'. Ensure samples have linked alignment results "
+            "with variant calls on this reference."
+        )
+    
     seq_matrix = build_sequence_matrix(
         variants_by_sample, all_positions, sorted_ids, ref_base_by_pos
     )
@@ -182,7 +189,7 @@ def _check_cached_result(
     result.last_checked_at = func.now()
     
     if result.is_stale or result.data_hash != data_hash:
-        result.is_stale = True
+        db.delete(result)
         db.commit()
         return None
     
@@ -262,6 +269,13 @@ def _run_phylogeny_task(task_id: str):
             variants_by_sample, all_positions, ref_base_by_pos = _get_variants_for_samples(
                 db, sorted_ids, ref.id
             )
+            
+            if not all_positions:
+                raise ValueError(
+                    "No SNP variant data found for the selected samples on reference "
+                    f"'{task.reference_name}'. Ensure samples have linked alignment results "
+                    "with variant calls on this reference."
+                )
             
             seq_matrix = build_sequence_matrix(
                 variants_by_sample, all_positions, sorted_ids, ref_base_by_pos
@@ -392,6 +406,14 @@ def create_phylogeny_task(
         sample = db.query(models.Sample).filter(models.Sample.id == sid).first()
         if not sample:
             raise ValueError(f"Sample {sid} not found")
+    
+    _, all_positions, _ = _get_variants_for_samples(db, sorted_ids, ref.id)
+    if not all_positions:
+        raise ValueError(
+            "No SNP variant data found for the selected samples on reference "
+            f"'{request.reference_name}'. Ensure samples have linked alignment results "
+            "with variant calls on this reference."
+        )
     
     cache_key = _get_cache_key(
         sorted_ids,
@@ -524,6 +546,10 @@ def get_task_result(db: Session, task_id: str) -> schemas.PhyloTreeOut:
     if result.molecular_clock_info:
         clock_info = schemas.MolecularClockInfo(**result.molecular_clock_info)
     
+    stale_msg = None
+    if result.is_stale:
+        stale_msg = "Underlying sample data has changed since this tree was built. The result may be outdated. Consider rebuilding with the same parameters."
+
     return schemas.PhyloTreeOut(
         task_id=task_id,
         status=task.status,
@@ -538,6 +564,7 @@ def get_task_result(db: Session, task_id: str) -> schemas.PhyloTreeOut:
         molecular_clock=clock_info,
         is_stale=result.is_stale,
         created_at=result.created_at,
+        progress_message=stale_msg,
     )
 
 

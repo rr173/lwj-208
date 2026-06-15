@@ -37,9 +37,6 @@ def get_tree_result(
 ):
     try:
         result = phylogeny_service.get_task_result(db, task_id)
-        if result.is_stale:
-            import warnings
-            warnings.warn("Tree result may be stale - underlying sample data has changed. Consider rebuilding.")
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
