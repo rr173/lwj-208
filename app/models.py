@@ -328,6 +328,18 @@ class LDMatrixResult(Base):
     )
 
 
+class PrimerDesignCache(Base):
+    __tablename__ = "primer_design_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    reference_name = Column(String, nullable=False)
+    target_start = Column(Integer, nullable=False)
+    target_end = Column(Integer, nullable=False)
+    result_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class HaplotypeBlockResult(Base):
     __tablename__ = "haplotype_block_results"
 

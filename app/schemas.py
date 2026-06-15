@@ -511,3 +511,53 @@ class HaplotypeBlockOut(BaseModel):
     min_maf: Optional[float] = None
     is_stale: bool
     created_at: Optional[datetime] = None
+
+
+class PrimerDesignRequest(BaseModel):
+    reference_name: str = Field(..., min_length=1)
+    target_start: int = Field(..., ge=0)
+    target_end: int = Field(..., ge=0)
+
+
+class OffTargetSite(BaseModel):
+    ref_start: int
+    ref_end: int
+    mismatches: int
+
+
+class NonspecificAmplicon(BaseModel):
+    fwd_site: Dict[str, Any]
+    rev_site: Dict[str, Any]
+    amplicon_start: int
+    amplicon_end: int
+    amplicon_length: int
+
+
+class PrimerInfo(BaseModel):
+    sequence: str
+    length: int
+    gc_percent: float
+    tm: float
+    bind_start: int
+    bind_end: int
+    off_target_sites: List[OffTargetSite] = []
+
+
+class PrimerPairOut(BaseModel):
+    rank: int
+    forward_primer: PrimerInfo
+    reverse_primer: PrimerInfo
+    amplicon_length: int
+    avg_tm_deviation: float
+    tm_difference: float
+    has_nonspecific_risk: bool
+    nonspecific_amplicons: List[NonspecificAmplicon] = []
+
+
+class PrimerDesignResult(BaseModel):
+    reference_name: str
+    target_start: int
+    target_end: int
+    flank_size: int
+    primer_pairs: List[PrimerPairOut]
+    cached: bool = False
