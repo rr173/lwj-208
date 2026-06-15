@@ -254,6 +254,43 @@ class PhyloTreeResult(Base):
     task = relationship("PhyloTreeTask", back_populates="result", uselist=False)
 
 
+class ScoringRule(Base):
+    __tablename__ = "scoring_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, default="")
+    condition_field = Column(String, nullable=False)
+    condition_operator = Column(String, nullable=False)
+    condition_value = Column(String, nullable=False)
+    weight = Column(Float, nullable=False)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class RuleSetVersion(Base):
+    __tablename__ = "rule_set_versions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SamplePathogenicityScore(Base):
+    __tablename__ = "sample_pathogenicity_scores"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sample_id = Column(Integer, ForeignKey("samples.id"), nullable=False, unique=True)
+    total_score = Column(Float, nullable=False)
+    classification = Column(String, nullable=False)
+    rule_version = Column(Integer, nullable=False)
+    variant_scores = Column(JSON, nullable=False, default=list)
+    scored_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    sample = relationship("Sample", backref="pathogenicity_score")
+
+
 class TreeComparisonResult(Base):
     __tablename__ = "tree_comparison_results"
 

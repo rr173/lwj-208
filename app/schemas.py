@@ -348,3 +348,118 @@ class TreeCompareOut(BaseModel):
     inconsistent_branches: List[InconsistentBranch] = []
     sample_names_a: List[str] = []
     sample_names_b: List[str] = []
+
+
+VALID_CONDITION_FIELDS = [
+    "impact", "feature_type", "variant_type", "consequence", "population_frequency"
+]
+VALID_CONDITION_OPERATORS = ["eq", "ne", "gt", "gte", "lt", "lte"]
+VALID_CLASSIFICATIONS = [
+    "pathogenic", "likely_pathogenic", "uncertain_significance",
+    "likely_benign", "benign",
+]
+
+
+class ScoringRuleCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = ""
+    condition_field: str = Field(..., pattern="|".join(VALID_CONDITION_FIELDS))
+    condition_operator: str = Field(..., pattern="|".join(VALID_CONDITION_OPERATORS))
+    condition_value: str = Field(..., min_length=1)
+    weight: float
+    enabled: bool = True
+
+
+class ScoringRuleUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    condition_field: Optional[str] = Field(None, pattern="|".join(VALID_CONDITION_FIELDS))
+    condition_operator: Optional[str] = Field(None, pattern="|".join(VALID_CONDITION_OPERATORS))
+    condition_value: Optional[str] = Field(None, min_length=1)
+    weight: Optional[float] = None
+    enabled: Optional[bool] = None
+
+
+class ScoringRuleOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    condition_field: str
+    condition_operator: str
+    condition_value: str
+    weight: float
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class VariantScoreDetail(BaseModel):
+    reference_id: int
+    ref_pos: int
+    variant_type: str
+    ref_base: str
+    alt_base: str
+    feature_type: Optional[str] = None
+    gene_name: Optional[str] = None
+    impact: Optional[str] = None
+    consequence: Optional[str] = None
+    population_frequency: Optional[float] = None
+    matched_rules: List[Dict[str, Any]] = []
+    variant_score: float
+    variant_classification: str
+
+
+class SampleScoreOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    total_score: float
+    classification: str
+    rule_version: int
+    current_rule_version: int
+    score_may_be_outdated: bool
+    total_variants: int
+    variant_details: List[VariantScoreDetail] = []
+    scored_at: datetime
+
+
+class SampleScoreSummaryOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    total_score: float
+    classification: str
+    rule_version: int
+    current_rule_version: int
+    score_may_be_outdated: bool
+    total_variants: int
+    scored_at: datetime
+
+
+class FilteredVariantOut(BaseModel):
+    reference_id: int
+    ref_pos: int
+    variant_type: str
+    ref_base: str
+    alt_base: str
+    feature_type: Optional[str] = None
+    gene_name: Optional[str] = None
+    impact: Optional[str] = None
+    consequence: Optional[str] = None
+    population_frequency: Optional[float] = None
+    variant_score: float
+    variant_classification: str
+    matched_rules: List[Dict[str, Any]] = []
+
+
+class ClassificationCount(BaseModel):
+    classification: str
+    count: int
+
+
+class ScoreStatsOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    total_variants: int
+    classification_distribution: List[ClassificationCount]

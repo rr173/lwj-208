@@ -4,10 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.api import reference, alignment, batch, stats, sample, phylogeny
+from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring
 from app.api.websocket import router as ws_router
 from app.sample_data import init_sample_data
 from app.services.batch_service import task_manager
+from app.services.scoring_service import seed_default_rules
 
 Base.metadata.create_all(bind=engine)
 
@@ -31,6 +32,7 @@ app.include_router(batch.router)
 app.include_router(stats.router)
 app.include_router(sample.router)
 app.include_router(phylogeny.router)
+app.include_router(scoring.router)
 app.include_router(ws_router)
 
 
@@ -39,6 +41,12 @@ async def startup_event():
     task_manager.set_loop(asyncio.get_running_loop())
     if os.getenv("INIT_SAMPLE_DATA", "false").lower() == "true":
         init_sample_data()
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        seed_default_rules(db)
+    finally:
+        db.close()
 
 
 @app.get("/")
