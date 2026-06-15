@@ -185,21 +185,20 @@ def _get_variant_population_frequency(
     db: Session, reference_id: int, ref_pos: int,
     variant_type: str, ref_base: str, alt_base: str,
 ) -> Optional[float]:
-    cache = db.query(models.PopulationFrequencyCache).filter(
-        models.PopulationFrequencyCache.reference_id == reference_id,
-        models.PopulationFrequencyCache.ref_pos == ref_pos,
-        models.PopulationFrequencyCache.variant_type == variant_type,
-        models.PopulationFrequencyCache.ref_base == ref_base,
-        models.PopulationFrequencyCache.alt_base == alt_base,
-    ).first()
-    if cache:
-        return cache.frequency
-    meta = db.query(models.PopulationFrequencyMeta).filter(
-        models.PopulationFrequencyMeta.reference_id == reference_id
-    ).first()
-    if meta and meta.total_samples_analyzed > 0:
-        return 0.0
-    return None
+    db.commit()
+    total_samples = db.query(func.count(models.Sample.id)).scalar() or 0
+    if total_samples == 0:
+        return None
+    sample_count = db.query(
+        func.count(func.distinct(models.SampleVariantSpectrum.sample_id))
+    ).filter(
+        models.SampleVariantSpectrum.reference_id == reference_id,
+        models.SampleVariantSpectrum.ref_pos == ref_pos,
+        models.SampleVariantSpectrum.variant_type == variant_type,
+        models.SampleVariantSpectrum.ref_base == ref_base,
+        models.SampleVariantSpectrum.alt_base == alt_base,
+    ).scalar() or 0
+    return sample_count / total_samples
 
 
 def _score_variant(
