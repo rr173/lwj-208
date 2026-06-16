@@ -33,3 +33,20 @@ def assess_variant_impact(sample_id: int, db: Session = Depends(get_db)):
     if result is None:
         raise HTTPException(status_code=404, detail="Sample not found")
     return result
+
+
+@router.get("/summary/{gene_name}/{domain_name}", response_model=schemas.DomainVariantSummaryOut)
+def get_domain_variant_summary(
+    gene_name: str,
+    domain_name: str,
+    db: Session = Depends(get_db),
+):
+    result = domain_service.summarize_domain_variants_across_samples(
+        db, gene_name, domain_name
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Domain '{domain_name}' for gene '{gene_name}' not found or no gene annotations available",
+        )
+    return result

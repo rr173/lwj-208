@@ -771,3 +771,42 @@ class SampleImpactAssessmentOut(BaseModel):
     variants_with_domain_hit: int
     risk_summary: Dict[str, int] = {}
     variants: List[VariantImpactOut] = []
+
+
+class DomainVariantCarrier(BaseModel):
+    sample_id: int
+    sample_name: str
+
+
+class DomainVariantSummaryEntry(BaseModel):
+    codon_position: int
+    ref_pos: int
+    ref_base: str
+    alt_base: str
+    variant_type: str
+    consequence: Optional[str] = None
+    aa_ref: Optional[str] = None
+    aa_alt: Optional[str] = None
+    amino_acid_change: Optional[str] = None
+    risk_level: str
+    risk_reason: Optional[str] = None
+    carrier_samples: List[DomainVariantCarrier] = []
+
+
+class DomainSummaryStats(BaseModel):
+    total_variants: int
+    unique_samples: int
+    high_risk_count: int
+    medium_risk_count: int
+    low_risk_count: int
+    unknown_risk_count: int
+
+
+class DomainVariantSummaryOut(BaseModel):
+    gene_name: str
+    domain_name: str
+    domain_type: str
+    start_codon: int
+    end_codon: int
+    summary_stats: DomainSummaryStats
+    variants: List[DomainVariantSummaryEntry] = []

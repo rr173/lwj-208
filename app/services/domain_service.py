@@ -268,3 +268,146 @@ def map_sample_variants_to_domains(
         risk_summary=risk_summary,
         variants=results,
     )
+
+
+def summarize_domain_variants_across_samples(
+    db: Session, gene_name: str, domain_name: str
+) -> Optional[schemas.DomainVariantSummaryOut]:
+    domain = (
+        db.query(models.ProteinDomain)
+        .filter(
+            models.ProteinDomain.gene_name == gene_name,
+            models.ProteinDomain.domain_name == domain_name,
+        )
+        .first()
+    )
+    if not domain:
+        return None
+
+    gene_exons = (
+        db.query(models.GeneAnnotation)
+        .filter(
+            models.GeneAnnotation.gene_name == gene_name,
+            models.GeneAnnotation.feature_type == "exon",
+        )
+        .all()
+    )
+    if not gene_exons:
+        return None
+
+    strand = gene_exons[0].strand or "+"
+
+    all_exon_variants = (
+        db.query(models.SampleVariantSpectrum)
+        .filter(
+            models.SampleVariantSpectrum.gene_name == gene_name,
+            models.SampleVariantSpectrum.feature_type == "exon",
+        )
+        .all()
+    )
+
+    sample_ids = {v.sample_id for v in all_exon_variants}
+    samples = db.query(models.Sample).filter(models.Sample.id.in_(sample_ids)).all()
+    sample_map = {s.id: s for s in samples}
+
+    gene_domains = (
+        db.query(models.ProteinDomain)
+        .filter(models.ProteinDomain.gene_name == gene_name)
+        .all()
+    )
+    has_gene_domains = len(gene_domains) > 0
+
+    variant_groups: Dict[tuple, schemas.DomainVariantSummaryEntry] = {}
+
+    for v in all_exon_variants:
+        codon_pos = _compute_codon_position(v.ref_pos, gene_exons, strand)
+        if codon_pos is None:
+            continue
+        if not (domain.start_codon <= codon_pos <= domain.end_codon):
+            continue
+
+        hit_domains = _find_matching_domains(codon_pos, gene_domains)
+
+        aa_ref = v.aa_ref
+        aa_alt = v.aa_alt
+        amino_acid_change = None
+        if aa_ref and aa_alt and (v.consequence in MISSENSE_CONSEQUENCES):
+            amino_acid_change = f"{aa_ref}{codon_pos}{aa_alt}"
+
+        risk_level, risk_reason = _assess_risk(
+            v.consequence, hit_domains, has_gene_domains
+        )
+
+        variant_key = (
+            v.ref_pos,
+            v.variant_type,
+            v.ref_base,
+            v.alt_base,
+            v.consequence,
+        )
+
+        if variant_key not in variant_groups:
+            variant_groups[variant_key] = schemas.DomainVariantSummaryEntry(
+                codon_position=codon_pos,
+                ref_pos=v.ref_pos,
+                ref_base=v.ref_base,
+                alt_base=v.alt_base,
+                variant_type=v.variant_type,
+                consequence=v.consequence,
+                aa_ref=aa_ref,
+                aa_alt=aa_alt,
+                amino_acid_change=amino_acid_change,
+                risk_level=risk_level,
+                risk_reason=risk_reason,
+                carrier_samples=[],
+            )
+
+        sample = sample_map.get(v.sample_id)
+        if sample:
+            already_present = any(
+                cs.sample_id == sample.id
+                for cs in variant_groups[variant_key].carrier_samples
+            )
+            if not already_present:
+                variant_groups[variant_key].carrier_samples.append(
+                    schemas.DomainVariantCarrier(
+                        sample_id=sample.id,
+                        sample_name=sample.name,
+                    )
+                )
+
+    variants_list = list(variant_groups.values())
+    variants_list.sort(key=lambda r: RISK_ORDER.get(r.risk_level, 0), reverse=True)
+
+    all_sample_ids: set = set()
+    high = medium = low = unknown = 0
+    for v in variants_list:
+        for cs in v.carrier_samples:
+            all_sample_ids.add(cs.sample_id)
+        if v.risk_level == "高风险":
+            high += 1
+        elif v.risk_level == "中风险":
+            medium += 1
+        elif v.risk_level == "低风险":
+            low += 1
+        else:
+            unknown += 1
+
+    summary_stats = schemas.DomainSummaryStats(
+        total_variants=len(variants_list),
+        unique_samples=len(all_sample_ids),
+        high_risk_count=high,
+        medium_risk_count=medium,
+        low_risk_count=low,
+        unknown_risk_count=unknown,
+    )
+
+    return schemas.DomainVariantSummaryOut(
+        gene_name=gene_name,
+        domain_name=domain_name,
+        domain_type=domain.domain_type,
+        start_codon=domain.start_codon,
+        end_codon=domain.end_codon,
+        summary_stats=summary_stats,
+        variants=variants_list,
+    )
