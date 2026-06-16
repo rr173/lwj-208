@@ -405,7 +405,7 @@ def infer_conserved_core_regions(
 
     coverage = [0] * primary_length
     position_scores = [[] for _ in range(primary_length)]
-    position_other_intervals: List[Dict[str, Tuple[int, int]]] = [{} for _ in range(primary_length)]
+    position_other_positions: List[Dict[str, int]] = [{} for _ in range(primary_length)]
 
     for pos in range(primary_length):
         all_covered = True
@@ -427,12 +427,7 @@ def infer_conserved_core_regions(
                 all_covered = False
                 break
 
-            if primary_name == pr.ref_a_name:
-                other_start, other_end = best_block.b_start, best_block.b_end
-            else:
-                other_start, other_end = best_block.a_start, best_block.a_end
-
-            position_other_intervals[pos][other_name] = (other_start, other_end)
+            position_other_positions[pos][other_name] = b_pos
 
             scores = _get_anchor_scores_in_interval(best_block, pos, pos + anchor_length - 1)
             if scores:
@@ -453,14 +448,12 @@ def infer_conserved_core_regions(
                 all_scores = []
                 other_intervals = {}
                 for other_name in reference_names[1:]:
-                    intervals = set()
+                    positions = []
                     for p in range(current_start, core_end + 1):
-                        if other_name in position_other_intervals[p]:
-                            intervals.add(position_other_intervals[p][other_name])
-                    if intervals:
-                        all_other_starts = [i[0] for i in intervals]
-                        all_other_ends = [i[1] for i in intervals]
-                        other_intervals[other_name] = (min(all_other_starts), max(all_other_ends))
+                        if other_name in position_other_positions[p]:
+                            positions.append(position_other_positions[p][other_name])
+                    if positions:
+                        other_intervals[other_name] = (min(positions), max(positions))
                 for p in range(current_start, core_end + 1):
                     all_scores.extend(position_scores[p])
                 avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.0
@@ -477,14 +470,12 @@ def infer_conserved_core_regions(
         all_scores = []
         other_intervals = {}
         for other_name in reference_names[1:]:
-            intervals = set()
+            positions = []
             for p in range(current_start, core_end + 1):
-                if other_name in position_other_intervals[p]:
-                    intervals.add(position_other_intervals[p][other_name])
-            if intervals:
-                all_other_starts = [i[0] for i in intervals]
-                all_other_ends = [i[1] for i in intervals]
-                other_intervals[other_name] = (min(all_other_starts), max(all_other_ends))
+                if other_name in position_other_positions[p]:
+                    positions.append(position_other_positions[p][other_name])
+            if positions:
+                other_intervals[other_name] = (min(positions), max(positions))
         for p in range(current_start, core_end + 1):
             all_scores.extend(position_scores[p])
         avg_score = sum(all_scores) / len(all_scores) if all_scores else 0.0
