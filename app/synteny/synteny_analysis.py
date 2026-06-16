@@ -41,6 +41,13 @@ class RearrangementEvent:
     anchor_count: int
 
 
+_COMP = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}
+
+
+def _reverse_complement(seq: str) -> str:
+    return ''.join(_COMP[c] for c in reversed(seq))
+
+
 def _generate_anchors(seq_a: str, anchor_length: int = ANCHOR_LENGTH) -> List[Tuple[int, str]]:
     anchors = []
     n = len(seq_a)
@@ -64,24 +71,28 @@ def _align_anchors(
                 f"Synteny analysis timed out after {timeout} seconds"
             )
 
-        result = optimized_smith_waterman(anchor_seq, seq_b)
         anchor_len = len(anchor_seq)
         threshold = anchor_len * score_threshold_ratio
 
-        if result["score"] >= threshold and result["score"] > 0:
-            direction = "+"
-            b_start = result["ref_start"]
-            b_end = result["ref_end"]
+        rc_anchor = _reverse_complement(anchor_seq)
 
-            if result["query_start"] > result["query_end"]:
-                direction = "-"
+        forward_result = optimized_smith_waterman(anchor_seq, seq_b)
+        rc_result = optimized_smith_waterman(rc_anchor, seq_b)
 
+        best_result = forward_result
+        direction = "+"
+
+        if rc_result["score"] > forward_result["score"]:
+            best_result = rc_result
+            direction = "-"
+
+        if best_result["score"] >= threshold and best_result["score"] > 0:
             aligned_anchors.append(SyntenyAnchor(
                 a_start=a_start,
                 a_end=a_start + anchor_len - 1,
-                b_start=b_start,
-                b_end=b_end,
-                score=result["score"],
+                b_start=best_result["ref_start"],
+                b_end=best_result["ref_end"],
+                score=best_result["score"],
                 direction=direction,
             ))
 
@@ -128,15 +139,13 @@ def find_synteny_blocks(
         if is_monotonic and same_direction:
             current_anchors.append(anchor)
         else:
-            if len(current_anchors) >= 2:
-                block = _build_block(current_anchors, current_direction)
-                blocks.append(block)
+            block = _build_block(current_anchors, current_direction)
+            blocks.append(block)
             current_anchors = [anchor]
             current_direction = anchor.direction
 
-    if len(current_anchors) >= 2:
-        block = _build_block(current_anchors, current_direction)
-        blocks.append(block)
+    block = _build_block(current_anchors, current_direction)
+    blocks.append(block)
 
     return blocks
 
@@ -149,8 +158,8 @@ def _build_block(anchors: List[SyntenyAnchor], direction: str) -> SyntenyBlock:
         b_start = anchors[0].b_start
         b_end = anchors[-1].b_end
     else:
-        b_start = anchors[-1].b_start
-        b_end = anchors[0].b_end
+        b_start = anchors[0].b_end
+        b_end = anchors[-1].b_start
 
     return SyntenyBlock(
         a_start=a_start,
@@ -170,7 +179,19 @@ def detect_rearrangements(
 ) -> List[RearrangementEvent]:
     events = []
 
+    for block in blocks:
+        if block.direction == "-":
+            events.append(RearrangementEvent(
+                event_type="inversion",
+                a_start=block.a_start,
+                a_end=block.a_end,
+                b_start=block.b_start,
+                b_end=block.b_end,
+                anchor_count=block.anchor_count,
+            ))
+
     if len(blocks) < 2:
+        _detect_duplications(blocks, events)
         return events
 
     for i in range(len(blocks) - 1):
@@ -179,6 +200,9 @@ def detect_rearrangements(
 
         a_gap_start = curr_block.a_end + 1
         a_gap_end = next_block.a_start - 1
+
+        if a_gap_start > a_gap_end:
+            continue
 
         if curr_block.direction != next_block.direction:
             events.append(RearrangementEvent(
@@ -190,29 +214,29 @@ def detect_rearrangements(
                 anchor_count=0,
             ))
 
-    sorted_by_b = sorted(blocks, key=lambda b: b.b_start)
-    a_order = [b.a_start for b in blocks]
-    b_order = [b.a_start for b in sorted_by_b]
+    for i in range(len(blocks) - 1):
+        curr = blocks[i]
+        nxt = blocks[i + 1]
+        if curr.direction == nxt.direction and curr.b_start > nxt.b_start:
+            a_gap_start = curr.a_end + 1
+            a_gap_end = nxt.a_start - 1
 
-    if a_order != b_order and len(blocks) >= 2:
-        for i in range(len(blocks) - 1):
-            curr = blocks[i]
-            next_b = blocks[i + 1]
-            if curr.b_start > next_b.b_start:
-                a_gap_start = curr.a_end + 1
-                a_gap_end = next_b.a_start - 1
-                b_gap_start = min(curr.b_end, next_b.b_start)
-                b_gap_end = max(curr.b_end, next_b.b_start)
+            if a_gap_start > a_gap_end:
+                a_gap_start = min(curr.a_start, nxt.a_start)
+                a_gap_end = max(curr.a_end, nxt.a_end)
 
-                events.append(RearrangementEvent(
-                    event_type="translocation",
-                    a_start=a_gap_start,
-                    a_end=a_gap_end,
-                    b_start=b_gap_start,
-                    b_end=b_gap_end,
-                    anchor_count=0,
-                ))
-                break
+            b_gap_start = min(curr.b_end, nxt.b_start)
+            b_gap_end = max(curr.b_end, nxt.b_start)
+
+            events.append(RearrangementEvent(
+                event_type="translocation",
+                a_start=a_gap_start,
+                a_end=a_gap_end,
+                b_start=b_gap_start,
+                b_end=b_gap_end,
+                anchor_count=0,
+            ))
+            break
 
     _detect_duplications(blocks, events)
 
@@ -262,7 +286,6 @@ def analyze_synteny(
         seq_a, seq_b, anchor_length, score_threshold_ratio, timeout
     )
 
-    remaining_time = max(1, timeout - int(time.time() - start_time))
     rearrangements = detect_rearrangements(blocks, len(seq_a), len(seq_b))
 
     return {
