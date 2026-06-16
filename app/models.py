@@ -375,3 +375,32 @@ class ProteinDomain(Base):
     __table_args__ = (
         Index("idx_protein_domain_gene", "gene_name"),
     )
+
+
+class SyntenyResult(Base):
+    __tablename__ = "synteny_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    ref_a_name = Column(String, nullable=False)
+    ref_b_name = Column(String, nullable=False)
+    ref_a_id = Column(Integer, ForeignKey("reference_sequences.id"), nullable=False)
+    ref_b_id = Column(Integer, ForeignKey("reference_sequences.id"), nullable=False)
+    seq_a_length = Column(Integer, nullable=False)
+    seq_b_length = Column(Integer, nullable=False)
+    anchor_length = Column(Integer, nullable=False)
+    score_threshold_ratio = Column(Float, nullable=False)
+    total_anchors_aligned = Column(Integer, nullable=False, default=0)
+    synteny_blocks = Column(JSON, nullable=False, default=list)
+    rearrangements = Column(JSON, nullable=False, default=list)
+    data_hash = Column(String, nullable=False)
+    is_stale = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    ref_a = relationship("ReferenceSequence", foreign_keys=[ref_a_id])
+    ref_b = relationship("ReferenceSequence", foreign_keys=[ref_b_id])
+
+    __table_args__ = (
+        Index("idx_synteny_refs", "ref_a_id", "ref_b_id"),
+    )

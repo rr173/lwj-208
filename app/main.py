@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain
+from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain, synteny
 from app.api.websocket import router as ws_router
 from app.sample_data import init_sample_data
 from app.services.batch_service import task_manager
@@ -15,7 +15,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title="Gene Sequence Alignment & Variant Annotation Service",
     description="DNA sequence alignment with Smith-Waterman algorithm, variant annotation, and population analysis",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 app.add_middleware(
@@ -37,6 +37,7 @@ app.include_router(ld.router)
 app.include_router(primer.router)
 app.include_router(transmission.router)
 app.include_router(domain.router)
+app.include_router(synteny.router)
 app.include_router(ws_router)
 
 

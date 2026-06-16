@@ -810,3 +810,43 @@ class DomainVariantSummaryOut(BaseModel):
     end_codon: int
     summary_stats: DomainSummaryStats
     variants: List[DomainVariantSummaryEntry] = []
+
+
+class SyntenyBlockOut(BaseModel):
+    a_start: int
+    a_end: int
+    b_start: int
+    b_end: int
+    anchor_count: int
+    direction: str
+
+
+class RearrangementEventOut(BaseModel):
+    event_type: str
+    a_start: int
+    a_end: int
+    b_start: int
+    b_end: int
+    anchor_count: int
+
+
+class SyntenyAnalysisRequest(BaseModel):
+    ref_a_name: str = Field(..., min_length=1)
+    ref_b_name: str = Field(..., min_length=1)
+    anchor_length: int = Field(50, ge=10, le=500)
+    score_threshold_ratio: float = Field(1.5, ge=0.5, le=5.0)
+
+
+class SyntenyAnalysisOut(BaseModel):
+    ref_a_name: str
+    ref_b_name: str
+    seq_a_length: int
+    seq_b_length: int
+    anchor_length: int
+    score_threshold_ratio: float
+    total_anchors_aligned: int
+    synteny_blocks: List[SyntenyBlockOut] = []
+    rearrangements: List[RearrangementEventOut] = []
+    is_stale: bool = False
+    cached: bool = False
+    created_at: Optional[datetime] = None
