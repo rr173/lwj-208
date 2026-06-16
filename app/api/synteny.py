@@ -58,3 +58,20 @@ def get_synteny_result(result_id: int, db: Session = Depends(get_db)):
     if not result:
         raise HTTPException(status_code=404, detail="Synteny result not found")
     return _result_to_out(result)
+
+
+@router.post("/multi-analyze", response_model=schemas.MultiSyntenyOut)
+def multi_analyze_synteny(request: schemas.MultiSyntenyRequest, db: Session = Depends(get_db)):
+    try:
+        result = synteny_service.perform_multi_synteny_analysis(
+            db,
+            reference_names=request.reference_names,
+            anchor_length=request.anchor_length,
+            score_threshold_ratio=request.score_threshold_ratio,
+            max_gap_ratio=request.max_gap_ratio,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except AlignmentTimeoutError as e:
+        raise HTTPException(status_code=408, detail=str(e))

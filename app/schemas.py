@@ -853,3 +853,47 @@ class SyntenyAnalysisOut(BaseModel):
     is_stale: bool = False
     cached: bool = False
     created_at: Optional[datetime] = None
+
+
+class SequenceInterval(BaseModel):
+    sequence_name: str
+    start: int
+    end: int
+
+
+class ConservedCoreRegion(BaseModel):
+    region_index: int
+    intervals: List[SequenceInterval]
+    avg_anchor_score: float
+    sequence_count: int
+    total_length: int
+
+
+class MultiSyntenyRequest(BaseModel):
+    reference_names: List[str] = Field(..., min_length=3, max_length=10)
+    anchor_length: int = Field(50, ge=10, le=500)
+    score_threshold_ratio: float = Field(1.5, ge=0.5, le=5.0)
+    max_gap_ratio: float = Field(3.0, ge=1.0, le=10.0)
+
+
+class PairwiseSyntenySummary(BaseModel):
+    ref_a_name: str
+    ref_b_name: str
+    block_count: int
+    total_anchors: int
+    cached: bool
+
+
+class MultiSyntenyOut(BaseModel):
+    reference_names: List[str]
+    first_reference_name: str
+    first_reference_length: int
+    conserved_core_regions: List[ConservedCoreRegion] = []
+    total_conserved_length: int
+    conservation_ratio: float
+    pairwise_summaries: List[PairwiseSyntenySummary] = []
+    anchor_length: int
+    score_threshold_ratio: float
+    max_gap_ratio: float
+    total_pairwise_comparisons: int
+    cached_pairwise_count: int
