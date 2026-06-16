@@ -69,8 +69,44 @@ def query_domains_by_gene(
     ]
 
 
-def _compute_codon_position(ref_pos: int, gene_start: int) -> int:
-    return (ref_pos - gene_start) // 3 + 1
+def _compute_codon_position(ref_pos: int, gene_exons: List, strand: str = "+") -> Optional[int]:
+    """
+    计算变异相对于整个 CDS 的密码子位置（1-based）。
+    gene_exons: 该基因所有的 exon GeneAnnotation 记录列表，每条有 start, end。
+    算法: 先按坐标排序 (+ strand 升序, - strand 降序), 找到 ref_pos 所在 exon,
+    累加之前所有 exon 的密码子数, 再加上当前 exon 内部的 (offset // 3 + 1)。
+    """
+    if not gene_exons:
+        return None
+
+    exon_list = [e for e in gene_exons]
+    if strand == "-":
+        exon_list.sort(key=lambda e: e.end, reverse=True)
+    else:
+        exon_list.sort(key=lambda e: e.start)
+
+    target_exon_idx = -1
+    for i, exon in enumerate(exon_list):
+        if exon.start <= ref_pos <= exon.end:
+            target_exon_idx = i
+            break
+    if target_exon_idx < 0:
+        return None
+
+    codon_count_before = 0
+    for i in range(target_exon_idx):
+        exon = exon_list[i]
+        exon_len = exon.end - exon.start + 1
+        codon_count_before += exon_len // 3
+
+    target_exon = exon_list[target_exon_idx]
+    if strand == "-":
+        offset_in_exon = target_exon.end - ref_pos
+    else:
+        offset_in_exon = ref_pos - target_exon.start
+    codon_in_exon = offset_in_exon // 3 + 1
+
+    return codon_count_before + codon_in_exon
 
 
 def _find_matching_domains(
@@ -140,7 +176,8 @@ def map_sample_variants_to_domains(
 
     gene_names = list({v.gene_name for v in exon_variants if v.gene_name})
 
-    gene_annotations: Dict[str, models.GeneAnnotation] = {}
+    gene_exons: Dict[str, List[models.GeneAnnotation]] = {}
+    gene_strands: Dict[str, str] = {}
     if gene_names:
         ann_rows = (
             db.query(models.GeneAnnotation)
@@ -148,8 +185,11 @@ def map_sample_variants_to_domains(
             .all()
         )
         for ann in ann_rows:
-            if ann.gene_name not in gene_annotations:
-                gene_annotations[ann.gene_name] = ann
+            if ann.gene_name not in gene_exons:
+                gene_exons[ann.gene_name] = []
+                gene_strands[ann.gene_name] = ann.strand or "+"
+            if ann.feature_type == "exon":
+                gene_exons[ann.gene_name].append(ann)
 
     gene_domains: Dict[str, List[models.ProteinDomain]] = {}
     if gene_names:
@@ -170,11 +210,14 @@ def map_sample_variants_to_domains(
         if not gene_name:
             continue
 
-        ann = gene_annotations.get(gene_name)
-        if not ann:
+        exons_for_gene = gene_exons.get(gene_name, [])
+        strand = gene_strands.get(gene_name, "+")
+        if not exons_for_gene:
             continue
 
-        codon_pos = _compute_codon_position(v.ref_pos, ann.start)
+        codon_pos = _compute_codon_position(v.ref_pos, exons_for_gene, strand)
+        if codon_pos is None:
+            continue
 
         domains_for_gene = gene_domains.get(gene_name, [])
         has_gene_domains = len(domains_for_gene) > 0
