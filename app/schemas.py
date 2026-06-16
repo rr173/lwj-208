@@ -897,3 +897,25 @@ class MultiSyntenyOut(BaseModel):
     max_gap_ratio: float
     total_pairwise_comparisons: int
     cached_pairwise_count: int
+
+
+class AuditLogOut(BaseModel):
+    id: int
+    timestamp: datetime
+    operation_type: str
+    resource_type: str
+    resource_id: Optional[str] = None
+    summary: str
+    method: str
+    path: str
+    status_code: int
+
+    class Config:
+        from_attributes = True
+
+
+class AuditLogListOut(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: List[AuditLogOut] = []

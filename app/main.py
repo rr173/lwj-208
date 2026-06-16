@@ -4,11 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain, synteny
+from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain, synteny, audit
 from app.api.websocket import router as ws_router
 from app.sample_data import init_sample_data
 from app.services.batch_service import task_manager
 from app.services.scoring_service import seed_default_rules
+from app.audit import AuditLogMiddleware
 
 Base.metadata.create_all(bind=engine)
 
@@ -26,6 +27,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(AuditLogMiddleware)
+
 app.include_router(reference.router)
 app.include_router(alignment.router)
 app.include_router(batch.router)
@@ -38,6 +41,7 @@ app.include_router(primer.router)
 app.include_router(transmission.router)
 app.include_router(domain.router)
 app.include_router(synteny.router)
+app.include_router(audit.router)
 app.include_router(ws_router)
 
 

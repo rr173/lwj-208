@@ -406,3 +406,23 @@ class SyntenyResult(Base):
     __table_args__ = (
         Index("idx_synteny_refs", "ref_a_id", "ref_b_id"),
     )
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    operation_type = Column(String, index=True, nullable=False)
+    resource_type = Column(String, index=True, nullable=False)
+    resource_id = Column(String, index=True, nullable=True)
+    summary = Column(String, nullable=False)
+    method = Column(String, nullable=False)
+    path = Column(String, nullable=False)
+    status_code = Column(Integer, nullable=False)
+    request_body = Column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("idx_audit_resource", "resource_type", "resource_id"),
+        Index("idx_audit_timestamp", "timestamp"),
+    )
