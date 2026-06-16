@@ -835,6 +835,7 @@ class SyntenyAnalysisRequest(BaseModel):
     ref_b_name: str = Field(..., min_length=1)
     anchor_length: int = Field(50, ge=10, le=500)
     score_threshold_ratio: float = Field(1.5, ge=0.5, le=5.0)
+    max_gap_ratio: float = Field(3.0, ge=1.0, le=10.0)
 
 
 class SyntenyAnalysisOut(BaseModel):
@@ -844,9 +845,11 @@ class SyntenyAnalysisOut(BaseModel):
     seq_b_length: int
     anchor_length: int
     score_threshold_ratio: float
+    max_gap_ratio: float
     total_anchors_aligned: int
     synteny_blocks: List[SyntenyBlockOut] = []
     rearrangements: List[RearrangementEventOut] = []
+    b_non_monotonic_transitions: List[int] = []
     is_stale: bool = False
     cached: bool = False
     created_at: Optional[datetime] = None

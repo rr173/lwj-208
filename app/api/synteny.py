@@ -17,9 +17,11 @@ def _result_to_out(result) -> schemas.SyntenyAnalysisOut:
         seq_b_length=result.seq_b_length,
         anchor_length=result.anchor_length,
         score_threshold_ratio=result.score_threshold_ratio,
+        max_gap_ratio=result.max_gap_ratio,
         total_anchors_aligned=result.total_anchors_aligned,
         synteny_blocks=[schemas.SyntenyBlockOut(**b) for b in result.synteny_blocks],
         rearrangements=[schemas.RearrangementEventOut(**r) for r in result.rearrangements],
+        b_non_monotonic_transitions=result.b_non_monotonic_transitions,
         is_stale=result.is_stale,
         cached=True,
         created_at=result.created_at,
@@ -35,6 +37,7 @@ def analyze_synteny(request: schemas.SyntenyAnalysisRequest, db: Session = Depen
             ref_b_name=request.ref_b_name,
             anchor_length=request.anchor_length,
             score_threshold_ratio=request.score_threshold_ratio,
+            max_gap_ratio=request.max_gap_ratio,
         )
         return result
     except ValueError as e:

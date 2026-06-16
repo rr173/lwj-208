@@ -21,9 +21,10 @@ def _build_cache_key(
     ref_b_name: str,
     anchor_length: int,
     score_threshold_ratio: float,
+    max_gap_ratio: float,
 ) -> str:
     sorted_names = sorted([ref_a_name, ref_b_name])
-    key_str = f"{sorted_names[0]}__{sorted_names[1]}__{anchor_length}__{score_threshold_ratio}"
+    key_str = f"{sorted_names[0]}__{sorted_names[1]}__{anchor_length}__{score_threshold_ratio}__{max_gap_ratio}"
     return hashlib.md5(key_str.encode()).hexdigest()
 
 
@@ -64,6 +65,7 @@ def perform_synteny_analysis(
     ref_b_name: str,
     anchor_length: int = 50,
     score_threshold_ratio: float = 1.5,
+    max_gap_ratio: float = 3.0,
 ) -> schemas.SyntenyAnalysisOut:
     all_refs = db.query(models.ReferenceSequence).all()
     if len(all_refs) < 2:
@@ -87,7 +89,7 @@ def perform_synteny_analysis(
     if ref_a.id == ref_b.id:
         raise ValueError("ref_a_name and ref_b_name must be different reference sequences")
 
-    cache_key = _build_cache_key(ref_a_name, ref_b_name, anchor_length, score_threshold_ratio)
+    cache_key = _build_cache_key(ref_a_name, ref_b_name, anchor_length, score_threshold_ratio, max_gap_ratio)
     cached = get_cached_synteny(db, cache_key)
 
     data_hash = _compute_data_hash(ref_a, ref_b)
@@ -100,9 +102,11 @@ def perform_synteny_analysis(
             seq_b_length=cached.seq_b_length,
             anchor_length=cached.anchor_length,
             score_threshold_ratio=cached.score_threshold_ratio,
+            max_gap_ratio=cached.max_gap_ratio,
             total_anchors_aligned=cached.total_anchors_aligned,
             synteny_blocks=[schemas.SyntenyBlockOut(**b) for b in cached.synteny_blocks],
             rearrangements=[schemas.RearrangementEventOut(**r) for r in cached.rearrangements],
+            b_non_monotonic_transitions=cached.b_non_monotonic_transitions,
             is_stale=cached.is_stale,
             cached=True,
             created_at=cached.created_at,
@@ -113,6 +117,7 @@ def perform_synteny_analysis(
         ref_b.sequence,
         anchor_length=anchor_length,
         score_threshold_ratio=score_threshold_ratio,
+        max_gap_ratio=max_gap_ratio,
     )
 
     blocks_dict = [_block_to_dict(b) for b in result["synteny_blocks"]]
@@ -123,9 +128,11 @@ def perform_synteny_analysis(
         cached.seq_b_length = result["seq_b_length"]
         cached.anchor_length = anchor_length
         cached.score_threshold_ratio = score_threshold_ratio
+        cached.max_gap_ratio = max_gap_ratio
         cached.total_anchors_aligned = result["total_anchors_aligned"]
         cached.synteny_blocks = blocks_dict
         cached.rearrangements = rearrangements_dict
+        cached.b_non_monotonic_transitions = result["b_non_monotonic_transitions"]
         cached.data_hash = data_hash
         cached.is_stale = False
         db.commit()
@@ -141,9 +148,11 @@ def perform_synteny_analysis(
             seq_b_length=result["seq_b_length"],
             anchor_length=anchor_length,
             score_threshold_ratio=score_threshold_ratio,
+            max_gap_ratio=max_gap_ratio,
             total_anchors_aligned=result["total_anchors_aligned"],
             synteny_blocks=blocks_dict,
             rearrangements=rearrangements_dict,
+            b_non_monotonic_transitions=result["b_non_monotonic_transitions"],
             data_hash=data_hash,
             is_stale=False,
         )
@@ -159,9 +168,11 @@ def perform_synteny_analysis(
         seq_b_length=cached.seq_b_length,
         anchor_length=cached.anchor_length,
         score_threshold_ratio=cached.score_threshold_ratio,
+        max_gap_ratio=cached.max_gap_ratio,
         total_anchors_aligned=cached.total_anchors_aligned,
         synteny_blocks=[schemas.SyntenyBlockOut(**b) for b in cached.synteny_blocks],
         rearrangements=[schemas.RearrangementEventOut(**r) for r in cached.rearrangements],
+        b_non_monotonic_transitions=cached.b_non_monotonic_transitions,
         is_stale=cached.is_stale,
         cached=False,
         created_at=cached.created_at,

@@ -8,6 +8,7 @@ from app.alignment.smith_waterman import optimized_smith_waterman, AlignmentTime
 ANCHOR_LENGTH = 50
 SCORE_THRESHOLD_RATIO = 1.5
 SYNTENY_TIMEOUT_SECONDS = 60
+MAX_GAP_RATIO = 3.0
 
 
 @dataclass
@@ -105,6 +106,7 @@ def find_synteny_blocks(
     anchor_length: int = ANCHOR_LENGTH,
     score_threshold_ratio: float = SCORE_THRESHOLD_RATIO,
     timeout: int = SYNTENY_TIMEOUT_SECONDS,
+    max_gap_ratio: float = MAX_GAP_RATIO,
 ) -> List[SyntenyBlock]:
     start_time = time.time()
 
@@ -117,6 +119,8 @@ def find_synteny_blocks(
         return []
 
     aligned_anchors.sort(key=lambda x: x.a_start)
+
+    max_gap = anchor_length * max_gap_ratio
 
     blocks = []
     current_anchors = [aligned_anchors[0]]
@@ -136,7 +140,10 @@ def find_synteny_blocks(
 
         same_direction = anchor.direction == current_direction
 
-        if is_monotonic and same_direction:
+        gap_on_b = abs(anchor.b_start - current_anchors[-1].b_end)
+        within_gap_limit = gap_on_b <= max_gap
+
+        if is_monotonic and same_direction and within_gap_limit:
             current_anchors.append(anchor)
         else:
             block = _build_block(current_anchors, current_direction)
@@ -279,22 +286,32 @@ def analyze_synteny(
     anchor_length: int = ANCHOR_LENGTH,
     score_threshold_ratio: float = SCORE_THRESHOLD_RATIO,
     timeout: int = SYNTENY_TIMEOUT_SECONDS,
+    max_gap_ratio: float = MAX_GAP_RATIO,
 ) -> Dict:
     start_time = time.time()
 
     blocks = find_synteny_blocks(
-        seq_a, seq_b, anchor_length, score_threshold_ratio, timeout
+        seq_a, seq_b, anchor_length, score_threshold_ratio, timeout, max_gap_ratio
     )
 
     rearrangements = detect_rearrangements(blocks, len(seq_a), len(seq_b))
+
+    b_non_monotonic_transitions = []
+    for i in range(len(blocks) - 1):
+        curr = blocks[i]
+        nxt = blocks[i + 1]
+        if nxt.b_start < curr.b_end:
+            b_non_monotonic_transitions.append(i)
 
     return {
         "seq_a_length": len(seq_a),
         "seq_b_length": len(seq_b),
         "anchor_length": anchor_length,
         "score_threshold_ratio": score_threshold_ratio,
+        "max_gap_ratio": max_gap_ratio,
         "synteny_blocks": blocks,
         "rearrangements": rearrangements,
+        "b_non_monotonic_transitions": b_non_monotonic_transitions,
         "total_anchors_aligned": sum(b.anchor_count for b in blocks),
     }
 
