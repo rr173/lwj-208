@@ -697,3 +697,77 @@ class ClusteringOut(BaseModel):
     similarity_threshold: float
     cluster_count: int
     clusters: List[ClusterOut] = []
+
+
+VALID_DOMAIN_TYPES = ["catalytic", "binding", "structural", "regulatory"]
+
+
+class ProteinDomainItem(BaseModel):
+    gene_name: str = Field(..., min_length=1)
+    domain_name: str = Field(..., min_length=1)
+    start_codon: int = Field(..., ge=1)
+    end_codon: int = Field(..., ge=1)
+    domain_type: str = Field(..., pattern="|".join(VALID_DOMAIN_TYPES))
+
+
+class ProteinDomainBatchRequest(BaseModel):
+    domains: List[ProteinDomainItem] = Field(..., min_length=1)
+
+
+class ProteinDomainOut(BaseModel):
+    id: int
+    gene_name: str
+    domain_name: str
+    start_codon: int
+    end_codon: int
+    domain_type: str
+
+    class Config:
+        from_attributes = True
+
+
+class HitDomainInfo(BaseModel):
+    domain_name: str
+    domain_type: str
+    start_codon: int
+    end_codon: int
+
+
+class VariantDomainMappingOut(BaseModel):
+    ref_pos: int
+    gene_name: str
+    codon_position: int
+    hit_domains: List[HitDomainInfo] = []
+    aa_ref: Optional[str] = None
+    aa_alt: Optional[str] = None
+    amino_acid_change: Optional[str] = None
+    consequence: Optional[str] = None
+    variant_type: str
+    ref_base: str
+    alt_base: str
+
+
+class VariantImpactOut(BaseModel):
+    ref_pos: int
+    gene_name: str
+    codon_position: int
+    hit_domains: List[HitDomainInfo] = []
+    aa_ref: Optional[str] = None
+    aa_alt: Optional[str] = None
+    amino_acid_change: Optional[str] = None
+    consequence: Optional[str] = None
+    variant_type: str
+    ref_base: str
+    alt_base: str
+    risk_level: str
+    risk_reason: Optional[str] = None
+
+
+class SampleImpactAssessmentOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    total_exon_variants: int
+    mapped_variants: int
+    variants_with_domain_hit: int
+    risk_summary: Dict[str, int] = {}
+    variants: List[VariantImpactOut] = []

@@ -360,3 +360,18 @@ class HaplotypeBlockResult(Base):
     __table_args__ = (
         Index("idx_haplotype_block_ref", "reference_id"),
     )
+
+
+class ProteinDomain(Base):
+    __tablename__ = "protein_domains"
+
+    id = Column(Integer, primary_key=True, index=True)
+    gene_name = Column(String, nullable=False, index=True)
+    domain_name = Column(String, nullable=False)
+    start_codon = Column(Integer, nullable=False)
+    end_codon = Column(Integer, nullable=False)
+    domain_type = Column(String, nullable=False)
+
+    __table_args__ = (
+        Index("idx_protein_domain_gene", "gene_name"),
+    )
