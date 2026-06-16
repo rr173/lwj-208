@@ -42,11 +42,11 @@ class RearrangementEvent:
     anchor_count: int
 
 
-_COMP = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C'}
+_COMP = {'A': 'T', 'T': 'A', 'C': 'G', 'G': 'C', 'N': 'N'}
 
 
 def _reverse_complement(seq: str) -> str:
-    return ''.join(_COMP[c] for c in reversed(seq))
+    return ''.join(_COMP.get(c, 'N') for c in reversed(seq))
 
 
 def _generate_anchors(seq_a: str, anchor_length: int = ANCHOR_LENGTH) -> List[Tuple[int, str]]:
