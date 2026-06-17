@@ -6,6 +6,7 @@ from app import models, schemas
 from app.services.phylogeny_service import invalidate_tree_results_for_samples
 from app.services.ld_service import invalidate_ld_results_for_sample
 from app.services.mutational_signature_service import invalidate_signature_results_for_samples
+from app.services import qc_service
 
 
 def _variant_five_tuple_key(v) -> Tuple:
@@ -233,7 +234,9 @@ def get_sample_spectrum(
     impact_filter: Optional[str] = None,
     gene_filter: Optional[str] = None,
     variant_type_filter: Optional[str] = None,
-) -> schemas.SampleSpectrumOut:
+    qc_status_filter: Optional[str] = None,
+    include_failed_qc: bool = False,
+) -> schemas.SampleSpectrumQCOut:
     sample_id = sample.id
     query = db.query(models.SampleVariantSpectrum).filter(
         models.SampleVariantSpectrum.sample_id == sample_id
@@ -258,6 +261,36 @@ def get_sample_spectrum(
         models.SampleVariantSpectrum.ref_pos,
     ).all()
 
+    spectrum_rows = qc_service.filter_spectrum_by_qc(
+        db, spectrum_rows, sample_id, include_failed_qc=include_failed_qc
+    )
+
+    qc_map: Dict[Tuple, Dict] = {}
+    active_rs = qc_service.get_active_rule_set(db)
+
+    if active_rs:
+        qc_query = db.query(models.VariantQCResult).filter(
+            models.VariantQCResult.sample_id == sample_id,
+            models.VariantQCResult.is_stale == False,
+        ).all()
+        for qr in qc_query:
+            key = (qr.reference_id, qr.ref_pos, qr.variant_type, qr.ref_base, qr.alt_base)
+            qc_map[key] = {
+                "qc_status": qr.qc_status,
+                "failed_rules": qr.failed_rules or [],
+                "is_stale": qr.is_stale,
+            }
+
+    if qc_status_filter:
+        filtered_rows = []
+        for row in spectrum_rows:
+            key = (row.reference_id, row.ref_pos, row.variant_type, row.ref_base, row.alt_base)
+            qc_info = qc_map.get(key)
+            row_status = qc_info["qc_status"] if qc_info else None
+            if row_status == qc_status_filter:
+                filtered_rows.append(row)
+        spectrum_rows = filtered_rows
+
     ref_cache: Dict[int, str] = {}
 
     def get_ref_name(ref_id: int) -> str:
@@ -268,29 +301,54 @@ def get_sample_spectrum(
             ref_cache[ref_id] = ref.name if ref else f"ref_{ref_id}"
         return ref_cache[ref_id]
 
-    variants_out = [
-        schemas.SpectrumVariantOut(
-            reference_name=get_ref_name(r.reference_id),
-            ref_pos=r.ref_pos,
-            variant_type=r.variant_type,
-            ref_base=r.ref_base,
-            alt_base=r.alt_base,
-            feature_type=r.feature_type,
-            gene_name=r.gene_name,
-            impact=r.impact,
-            consequence=r.consequence,
-            aa_ref=r.aa_ref,
-            aa_alt=r.aa_alt,
-            source_alignment_ids=r.source_alignment_ids or [],
+    variants_out = []
+    pass_count = 0
+    fail_count = 0
+    stale_count = 0
+
+    for r in spectrum_rows:
+        key = (r.reference_id, r.ref_pos, r.variant_type, r.ref_base, r.alt_base)
+        qc_info = qc_map.get(key)
+        qc_status_val = qc_info["qc_status"] if qc_info else None
+        qc_failed_val = qc_info["failed_rules"] if qc_info else []
+        qc_stale_val = qc_info["is_stale"] if qc_info else False
+
+        if qc_status_val == "PASS":
+            pass_count += 1
+        elif qc_status_val == "FAIL":
+            fail_count += 1
+        if qc_stale_val:
+            stale_count += 1
+
+        variants_out.append(
+            schemas.SpectrumVariantQCOut(
+                reference_name=get_ref_name(r.reference_id),
+                ref_pos=r.ref_pos,
+                variant_type=r.variant_type,
+                ref_base=r.ref_base,
+                alt_base=r.alt_base,
+                feature_type=r.feature_type,
+                gene_name=r.gene_name,
+                impact=r.impact,
+                consequence=r.consequence,
+                aa_ref=r.aa_ref,
+                aa_alt=r.aa_alt,
+                source_alignment_ids=r.source_alignment_ids or [],
+                qc_status=qc_status_val,
+                qc_failed_rules=qc_failed_val,
+                qc_is_stale=qc_stale_val,
+            )
         )
-        for r in spectrum_rows
-    ]
 
     sample_db = db.query(models.Sample).filter(models.Sample.id == sample_id).first()
-    return schemas.SampleSpectrumOut(
+    return schemas.SampleSpectrumQCOut(
         sample_id=sample_id,
         sample_name=sample_db.name if sample_db else f"sample_{sample_id}",
         total_variants=len(variants_out),
+        pass_count=pass_count if active_rs else None,
+        fail_count=fail_count if active_rs else None,
+        stale_count=stale_count if active_rs else None,
+        active_rule_set=active_rs.name if active_rs else None,
         variants=variants_out,
     )
 

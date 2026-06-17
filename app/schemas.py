@@ -1264,3 +1264,148 @@ class PipelineResumeResponse(BaseModel):
     resume_count: int = 0
     resumed_from_step: Optional[int] = None
     skipped_completed_steps: int = 0
+
+
+VALID_QC_RULE_TYPES = ["alignment_score", "coverage_depth", "edge_position"]
+
+
+class QCRuleCreateItem(BaseModel):
+    rule_type: str = Field(..., pattern="|".join(VALID_QC_RULE_TYPES))
+    min_alignment_score: Optional[int] = Field(None, description="Minimum alignment score threshold (for alignment_score rule)")
+    min_coverage_depth: Optional[int] = Field(None, description="Minimum independent detection count (for coverage_depth rule)")
+    edge_margin: Optional[int] = Field(None, description="Exclude variants within N bases of sequence ends (for edge_position rule)")
+
+    @model_validator(mode="after")
+    def validate_rule_params(self):
+        if self.rule_type == "alignment_score" and self.min_alignment_score is None:
+            raise ValueError("min_alignment_score is required for alignment_score rule")
+        if self.rule_type == "coverage_depth" and self.min_coverage_depth is None:
+            raise ValueError("min_coverage_depth is required for coverage_depth rule")
+        if self.rule_type == "edge_position" and self.edge_margin is None:
+            raise ValueError("edge_margin is required for edge_position rule")
+        return self
+
+
+class QCRuleSetCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = ""
+    rules: List[QCRuleCreateItem] = Field(..., min_length=1)
+    activate: bool = False
+
+
+class QCRuleSetUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    rules: Optional[List[QCRuleCreateItem]] = Field(None, min_length=1)
+
+
+class QCRuleOut(BaseModel):
+    id: int
+    rule_index: int
+    rule_type: str
+    min_alignment_score: Optional[int] = None
+    min_coverage_depth: Optional[int] = None
+    edge_margin: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+
+class QCRuleSetOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    is_active: bool
+    rules: List[QCRuleOut] = []
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class QCRuleSetListOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    is_active: bool
+    rule_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class FailedRuleDetail(BaseModel):
+    rule_id: int
+    rule_type: str
+    rule_description: str
+    actual_value: Any
+    threshold: Any
+
+
+class VariantQCOut(BaseModel):
+    reference_id: int
+    ref_pos: int
+    variant_type: str
+    ref_base: str
+    alt_base: str
+    qc_status: str
+    failed_rules: List[FailedRuleDetail] = []
+    is_stale: bool = False
+
+
+class SampleQCResultOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    rule_set_id: int
+    rule_set_name: str
+    total_variants: int
+    pass_count: int
+    fail_count: int
+    stale_count: int
+    qc_results: List[VariantQCOut] = []
+    executed_at: datetime
+
+
+class SampleQCSummaryOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    rule_set_id: Optional[int] = None
+    rule_set_name: Optional[str] = None
+    has_qc_results: bool
+    is_stale: bool
+    total_variants: int
+    pass_count: int
+    fail_count: int
+    stale_count: int
+
+
+class SpectrumVariantQCOut(BaseModel):
+    reference_name: str
+    ref_pos: int
+    variant_type: str
+    ref_base: str
+    alt_base: str
+    feature_type: Optional[str] = None
+    gene_name: Optional[str] = None
+    impact: Optional[str] = None
+    consequence: Optional[str] = None
+    aa_ref: Optional[str] = None
+    aa_alt: Optional[str] = None
+    source_alignment_ids: List[int] = []
+    qc_status: Optional[str] = None
+    qc_failed_rules: List[Dict[str, Any]] = []
+    qc_is_stale: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class SampleSpectrumQCOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    total_variants: int
+    pass_count: Optional[int] = None
+    fail_count: Optional[int] = None
+    stale_count: Optional[int] = None
+    active_rule_set: Optional[str] = None
+    variants: List[SpectrumVariantQCOut] = []

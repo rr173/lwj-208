@@ -2,6 +2,7 @@ from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app import models, schemas
+from app.services import qc_service
 
 
 DEFAULT_RULES = [
@@ -256,7 +257,7 @@ def _score_variant(
     }
 
 
-def score_sample(db: Session, sample_id: int) -> schemas.SampleScoreOut:
+def score_sample(db: Session, sample_id: int, include_failed_qc: bool = False) -> schemas.SampleScoreOut:
     sample = db.query(models.Sample).filter(models.Sample.id == sample_id).first()
     if not sample:
         raise ValueError(f"Sample {sample_id} not found")
@@ -267,6 +268,10 @@ def score_sample(db: Session, sample_id: int) -> schemas.SampleScoreOut:
         models.SampleVariantSpectrum.reference_id,
         models.SampleVariantSpectrum.ref_pos,
     ).all()
+
+    spectrum = qc_service.filter_spectrum_by_qc(
+        db, spectrum, sample_id, include_failed_qc=include_failed_qc
+    )
 
     rules = list_rules(db, enabled_only=True)
     current_version = get_current_rule_version(db)

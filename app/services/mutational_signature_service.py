@@ -4,6 +4,7 @@ from sqlalchemy import func
 from datetime import datetime
 
 from app import models, schemas
+from app.services import qc_service
 from app.mutation_signature.trinucleotide import (
     ALL_96_MUTATION_TYPES,
     get_trinucleotide_context,
@@ -58,6 +59,7 @@ def _build_count_matrix(
     db: Session,
     samples: List[models.Sample],
     reference: models.ReferenceSequence,
+    include_failed_qc: bool = False
 ) -> Tuple[List[List[int]], List[str]]:
     n_samples = len(samples)
     count_matrix = create_empty_count_matrix(n_samples)
@@ -70,6 +72,10 @@ def _build_count_matrix(
             models.SampleVariantSpectrum.reference_id == reference.id,
             models.SampleVariantSpectrum.variant_type == "SNP",
         ).all()
+
+        spectrum_rows = qc_service.filter_spectrum_by_qc(
+            db, spectrum_rows, sample.id, include_failed_qc=include_failed_qc
+        )
 
         for row in spectrum_rows:
             ref_pos = row.ref_pos
@@ -111,6 +117,7 @@ def build_mutational_spectrum(
     db: Session,
     sample_ids: List[int],
     reference_name: str,
+    include_failed_qc: bool = False
 ) -> schemas.MutationalSpectrumOut:
     reference = _get_reference_or_error(db, reference_name)
     samples = _get_samples_or_error(db, sample_ids)
@@ -140,7 +147,7 @@ def build_mutational_spectrum(
         )
 
     count_matrix, mutation_types = _build_count_matrix(
-        db, samples, reference
+        db, samples, reference, include_failed_qc=include_failed_qc
     )
 
     if cached:
@@ -180,6 +187,7 @@ def extract_signatures(
     sample_ids: List[int],
     reference_name: str,
     k_value: int,
+    include_failed_qc: bool = False
 ) -> schemas.NMFSignatureOut:
     reference = _get_reference_or_error(db, reference_name)
     samples = _get_samples_or_error(db, sample_ids)
@@ -212,7 +220,7 @@ def extract_signatures(
             created_at=cached.created_at,
         )
 
-    spectrum_out = build_mutational_spectrum(db, sorted_ids, reference_name)
+    spectrum_out = build_mutational_spectrum(db, sorted_ids, reference_name, include_failed_qc=include_failed_qc)
     V = _count_matrix_to_float(spectrum_out.count_matrix)
 
     W, H, error, iterations = nmf_with_multiple_initializations(
@@ -320,6 +328,7 @@ def find_optimal_k_value(
     db: Session,
     sample_ids: List[int],
     reference_name: str,
+    include_failed_qc: bool = False
 ) -> schemas.OptimalKOut:
     reference = _get_reference_or_error(db, reference_name)
     samples = _get_samples_or_error(db, sample_ids)
@@ -360,7 +369,7 @@ def find_optimal_k_value(
             created_at=cached.created_at,
         )
 
-    spectrum_out = build_mutational_spectrum(db, sorted_ids, reference_name)
+    spectrum_out = build_mutational_spectrum(db, sorted_ids, reference_name, include_failed_qc=include_failed_qc)
     V = _count_matrix_to_float(spectrum_out.count_matrix)
 
     recon_errors, cophenetic_corrs, recommended_k = find_optimal_k(
@@ -513,6 +522,7 @@ def analyze_signature_temporal_trends(
     reference_name: str,
     k_value: Optional[int] = None,
     p_value_threshold: float = 0.05,
+    include_failed_qc: bool = False
 ) -> schemas.SignatureTemporalAnalysisOut:
     reference = _get_reference_or_error(db, reference_name)
     samples = _get_samples_or_error(db, sample_ids)
@@ -520,10 +530,10 @@ def analyze_signature_temporal_trends(
 
     actual_k = k_value
     if actual_k is None:
-        optimal_k_out = find_optimal_k_value(db, sorted_ids, reference_name)
+        optimal_k_out = find_optimal_k_value(db, sorted_ids, reference_name, include_failed_qc=include_failed_qc)
         actual_k = optimal_k_out.recommended_k
 
-    nmf_out = extract_signatures(db, sorted_ids, reference_name, actual_k)
+    nmf_out = extract_signatures(db, sorted_ids, reference_name, actual_k, include_failed_qc=include_failed_qc)
 
     sample_id_to_date = {}
     sample_id_to_name = {}
@@ -635,6 +645,7 @@ def calculate_exposure_change_between_dates(
     end_date: datetime,
     k_value: Optional[int] = None,
     aggregation: str = "mean",
+    include_failed_qc: bool = False
 ) -> schemas.ExposureChangeOut:
     if start_date >= end_date:
         raise ValueError("start_date must be earlier than end_date")
@@ -645,10 +656,10 @@ def calculate_exposure_change_between_dates(
 
     actual_k = k_value
     if actual_k is None:
-        optimal_k_out = find_optimal_k_value(db, sorted_ids, reference_name)
+        optimal_k_out = find_optimal_k_value(db, sorted_ids, reference_name, include_failed_qc=include_failed_qc)
         actual_k = optimal_k_out.recommended_k
 
-    nmf_out = extract_signatures(db, sorted_ids, reference_name, actual_k)
+    nmf_out = extract_signatures(db, sorted_ids, reference_name, actual_k, include_failed_qc=include_failed_qc)
 
     sample_id_to_date = {}
     sample_id_to_name = {}

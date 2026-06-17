@@ -4,13 +4,42 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base, SessionLocal
-from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain, synteny, audit, mutational_signature, pipeline
+from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain, synteny, audit, mutational_signature, pipeline, qc
 from app.api.websocket import router as ws_router
 from app.sample_data import init_sample_data
 from app.services.batch_service import task_manager
 from app.services.scoring_service import seed_default_rules
 from app.services.mutational_signature_service import list_reference_signatures
 from app.audit import AuditLogMiddleware
+
+def _migrate_qc_tables():
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    existing_tables = inspector.get_table_names()
+
+    if "qc_rules" in existing_tables:
+        cols = [c["name"] for c in inspector.get_columns("qc_rules")]
+        if "rule_index" not in cols:
+            with engine.connect() as conn:
+                conn.execute(text("DROP TABLE IF EXISTS variant_qc_results"))
+                conn.execute(text("DROP TABLE IF EXISTS qc_rules"))
+                conn.execute(text("DROP TABLE IF EXISTS qc_rule_sets"))
+                conn.commit()
+
+    elif "variant_qc_results" in existing_tables:
+        cols = [c["name"] for c in inspector.get_columns("variant_qc_results")]
+        if "created_at" not in cols:
+            with engine.connect() as conn:
+                conn.execute(text("DROP TABLE IF EXISTS variant_qc_results"))
+                conn.execute(text("DROP TABLE IF EXISTS qc_rules"))
+                conn.execute(text("DROP TABLE IF EXISTS qc_rule_sets"))
+                conn.commit()
+
+
+try:
+    _migrate_qc_tables()
+except Exception:
+    pass
 
 Base.metadata.create_all(bind=engine)
 
@@ -72,6 +101,7 @@ app.include_router(audit.router)
 app.include_router(ws_router)
 app.include_router(mutational_signature.router)
 app.include_router(pipeline.router)
+app.include_router(qc.router)
 
 
 @app.on_event("startup")

@@ -90,18 +90,22 @@ def unlink_alignment(
     return None
 
 
-@router.get("/{sample_id}/spectrum", response_model=schemas.SampleSpectrumOut)
+@router.get("/{sample_id}/spectrum", response_model=schemas.SampleSpectrumQCOut)
 def get_sample_spectrum(
     sample_id: int,
     reference_name: Optional[str] = Query(None, description="Filter by reference sequence name"),
     impact: Optional[str] = Query(None, description="Filter by impact level (HIGH, MODERATE, LOW, MODIFIER)"),
     gene_name: Optional[str] = Query(None, description="Filter by gene name"),
     variant_type: Optional[str] = Query(None, description="Filter by variant type (SNP, INS, DEL)"),
+    qc_status: Optional[str] = Query(None, description="Filter by QC status (PASS/FAIL)"),
+    include_failed_qc: bool = Query(False, description="Include variants that failed QC (default: only PASS)"),
     db: Session = Depends(get_db),
 ):
     sample = sample_service.get_sample_by_id(db, sample_id)
     if not sample:
         raise HTTPException(status_code=404, detail="Sample not found")
+    if qc_status and qc_status not in ("PASS", "FAIL"):
+        raise HTTPException(status_code=400, detail="qc_status must be 'PASS' or 'FAIL'")
     return sample_service.get_sample_spectrum(
         db,
         sample,
@@ -109,6 +113,8 @@ def get_sample_spectrum(
         impact_filter=impact,
         gene_filter=gene_name,
         variant_type_filter=variant_type,
+        qc_status_filter=qc_status,
+        include_failed_qc=include_failed_qc,
     )
 
 

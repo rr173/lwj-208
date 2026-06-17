@@ -408,6 +408,69 @@ class SyntenyResult(Base):
     )
 
 
+class QCRuleSet(Base):
+    __tablename__ = "qc_rule_sets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, default="")
+    is_active = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    rules = relationship("QCRule", back_populates="rule_set", cascade="all, delete-orphan", order_by="QCRule.rule_index")
+
+    __table_args__ = (
+        Index("idx_qc_ruleset_active", "is_active"),
+    )
+
+
+class QCRule(Base):
+    __tablename__ = "qc_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rule_set_id = Column(Integer, ForeignKey("qc_rule_sets.id"), nullable=False)
+    rule_index = Column(Integer, nullable=False)
+    rule_type = Column(String, nullable=False)
+    min_alignment_score = Column(Integer, nullable=True)
+    min_coverage_depth = Column(Integer, nullable=True)
+    edge_margin = Column(Integer, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    rule_set = relationship("QCRuleSet", back_populates="rules")
+
+    __table_args__ = (
+        Index("idx_qc_rule_set", "rule_set_id"),
+    )
+
+
+class VariantQCResult(Base):
+    __tablename__ = "variant_qc_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    sample_id = Column(Integer, ForeignKey("samples.id"), nullable=False)
+    reference_id = Column(Integer, ForeignKey("reference_sequences.id"), nullable=False)
+    ref_pos = Column(Integer, nullable=False)
+    variant_type = Column(String, nullable=False)
+    ref_base = Column(String, nullable=False)
+    alt_base = Column(String, nullable=False)
+    rule_set_id = Column(Integer, ForeignKey("qc_rule_sets.id"), nullable=False)
+    qc_status = Column(String, nullable=False, index=True)
+    failed_rules = Column(JSON, default=list)
+    is_stale = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint(
+            "sample_id", "reference_id", "ref_pos", "variant_type", "ref_base", "alt_base",
+            name="uq_variant_qc_unique"
+        ),
+        Index("idx_qc_result_sample", "sample_id"),
+        Index("idx_qc_result_sample_status", "sample_id", "qc_status"),
+        Index("idx_qc_result_sample_stale", "sample_id", "is_stale"),
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
 

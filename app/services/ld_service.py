@@ -8,6 +8,7 @@ from sqlalchemy import func
 from app import models, schemas
 from app.ld.ld_calculator import compute_ld_matrix
 from app.ld.haplotype_blocks import find_haplotype_blocks
+from app.services import qc_service
 
 
 def _compute_snp_maf(
@@ -117,17 +118,9 @@ def _compute_data_hash(
 
 def _get_snp_data_for_reference(
     db: Session,
-    reference_id: int
+    reference_id: int,
+    include_failed_qc: bool = False
 ) -> Tuple[List[int], List[int], Dict[int, Dict[int, bool]]]:
-    """
-    Extract all SNP data for a given reference across all samples.
-    
-    Returns:
-        Tuple of (sample_ids, snp_positions, genotypes_by_sample)
-        - sample_ids: sorted list of all sample IDs
-        - snp_positions: sorted list of all SNP positions
-        - genotypes_by_sample: dict mapping sample_id -> {pos: is_variant}
-    """
     samples = db.query(models.Sample).order_by(models.Sample.id).all()
     sample_ids = [s.id for s in samples]
 
@@ -135,6 +128,20 @@ def _get_snp_data_for_reference(
         models.SampleVariantSpectrum.reference_id == reference_id,
         models.SampleVariantSpectrum.variant_type == "SNP",
     ).all()
+
+    if not include_failed_qc:
+        filtered_snps = []
+        for snp in all_snps:
+            pass_keys = qc_service.get_pass_variant_keys_for_sample(
+                db, snp.sample_id, include_failed_qc=False
+            )
+            if pass_keys is None:
+                filtered_snps.append(snp)
+            else:
+                key = (snp.reference_id, snp.ref_pos, snp.variant_type, snp.ref_base, snp.alt_base)
+                if key in pass_keys:
+                    filtered_snps.append(snp)
+        all_snps = filtered_snps
 
     snp_positions_set = set()
     genotypes_by_sample: Dict[int, Dict[int, bool]] = {sid: {} for sid in sample_ids}
@@ -153,17 +160,16 @@ def _build_ld_cache_key(
     reference_name: str,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> str:
-    """
-    Build cache key for LD matrix that includes filter parameters.
-    """
     key_parts = [
         "ld_matrix",
         reference_name,
         f"start={start}",
         f"end={end}",
-        f"min_maf={min_maf}"
+        f"min_maf={min_maf}",
+        f"include_failed_qc={include_failed_qc}"
     ]
     return hashlib.md5(":".join(key_parts).encode()).hexdigest()
 
@@ -174,13 +180,10 @@ def _check_ld_matrix_cache(
     data_hash: str,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> Optional[models.LDMatrixResult]:
-    """
-    Check if a valid cached LD matrix result exists.
-    Returns the cached result if valid, None otherwise.
-    """
-    cache_key = _build_ld_cache_key(reference_name, start, end, min_maf)
+    cache_key = _build_ld_cache_key(reference_name, start, end, min_maf, include_failed_qc)
 
     result = db.query(models.LDMatrixResult).filter(
         models.LDMatrixResult.cache_key == cache_key
@@ -210,12 +213,10 @@ def _save_ld_matrix_result(
     data_hash: str,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> models.LDMatrixResult:
-    """
-    Save LD matrix result to database.
-    """
-    cache_key = _build_ld_cache_key(reference_name, start, end, min_maf)
+    cache_key = _build_ld_cache_key(reference_name, start, end, min_maf, include_failed_qc)
 
     existing = db.query(models.LDMatrixResult).filter(
         models.LDMatrixResult.cache_key == cache_key
@@ -246,24 +247,9 @@ def compute_ld_matrix_endpoint(
     reference_name: str,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> schemas.LDMatrixOut:
-    """
-    Compute or retrieve cached LD matrix for a reference sequence.
-    
-    Args:
-        db: Database session
-        reference_name: Name of the reference sequence
-        start: Optional start position (1-based, inclusive)
-        end: Optional end position (1-based, inclusive)
-        min_maf: Minimum minor allele frequency threshold
-    
-    Returns:
-        LDMatrixOut schema with LD pairs and filter statistics
-    
-    Raises:
-        ValueError: if reference not found, fewer than 5 samples, or no SNPs
-    """
     if min_maf < 0 or min_maf > 0.5:
         raise ValueError("min_maf must be between 0 and 0.5")
 
@@ -289,7 +275,7 @@ def compute_ld_matrix_endpoint(
 
     data_hash = _compute_data_hash(db, ref.id)
 
-    cached = _check_ld_matrix_cache(db, reference_name, data_hash, start, end, min_maf)
+    cached = _check_ld_matrix_cache(db, reference_name, data_hash, start, end, min_maf, include_failed_qc)
     if cached:
         ld_pairs = [
             schemas.LDPair(
@@ -316,7 +302,7 @@ def compute_ld_matrix_endpoint(
             created_at=cached.created_at,
         )
 
-    sample_ids, snp_positions, genotypes_by_sample = _get_snp_data_for_reference(db, ref.id)
+    sample_ids, snp_positions, genotypes_by_sample = _get_snp_data_for_reference(db, ref.id, include_failed_qc=include_failed_qc)
     original_snp_count = len(snp_positions)
 
     filtered_snps, filtered_count = _filter_snps(
@@ -334,7 +320,7 @@ def compute_ld_matrix_endpoint(
 
     _save_ld_matrix_result(
         db, ref.id, reference_name, len(sample_ids), filtered_snps,
-        ld_pairs_raw, data_hash, start, end, min_maf
+        ld_pairs_raw, data_hash, start, end, min_maf, include_failed_qc
     )
 
     ld_pairs = [
@@ -369,18 +355,17 @@ def _build_haplotype_cache_key(
     r2_threshold: float,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> str:
-    """
-    Build cache key for haplotype blocks that includes filter parameters.
-    """
     key_parts = [
         "haplotype_blocks",
         reference_name,
         f"r2={r2_threshold}",
         f"start={start}",
         f"end={end}",
-        f"min_maf={min_maf}"
+        f"min_maf={min_maf}",
+        f"include_failed_qc={include_failed_qc}"
     ]
     return hashlib.md5(":".join(key_parts).encode()).hexdigest()
 
@@ -392,13 +377,11 @@ def _check_haplotype_block_cache(
     data_hash: str,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> Optional[models.HaplotypeBlockResult]:
-    """
-    Check if a valid cached haplotype block result exists.
-    """
     cache_key = _build_haplotype_cache_key(
-        reference_name, r2_threshold, start, end, min_maf
+        reference_name, r2_threshold, start, end, min_maf, include_failed_qc
     )
 
     result = db.query(models.HaplotypeBlockResult).filter(
@@ -430,13 +413,11 @@ def _save_haplotype_block_result(
     data_hash: str,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> models.HaplotypeBlockResult:
-    """
-    Save haplotype block result to database.
-    """
     cache_key = _build_haplotype_cache_key(
-        reference_name, r2_threshold, start, end, min_maf
+        reference_name, r2_threshold, start, end, min_maf, include_failed_qc
     )
 
     existing = db.query(models.HaplotypeBlockResult).filter(
@@ -470,21 +451,16 @@ def _get_ld_matrix_data(
     reference_name: str,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> Tuple[List[int], List[Dict], int, int]:
-    """
-    Get LD matrix data, either from cache or by computing it.
-    
-    Returns:
-        Tuple of (filtered_snp_positions, ld_pairs_raw, original_snp_count, filtered_count)
-    """
     data_hash = _compute_data_hash(db, reference_id)
 
-    cached = _check_ld_matrix_cache(db, reference_name, data_hash, start, end, min_maf)
+    cached = _check_ld_matrix_cache(db, reference_name, data_hash, start, end, min_maf, include_failed_qc)
     if cached:
         return cached.snp_positions, cached.ld_matrix, cached.snp_count, 0
 
-    sample_ids, snp_positions, genotypes_by_sample = _get_snp_data_for_reference(db, reference_id)
+    sample_ids, snp_positions, genotypes_by_sample = _get_snp_data_for_reference(db, reference_id, include_failed_qc=include_failed_qc)
     original_snp_count = len(snp_positions)
 
     filtered_snps, filtered_count = _filter_snps(
@@ -495,7 +471,7 @@ def _get_ld_matrix_data(
 
     _save_ld_matrix_result(
         db, reference_id, reference_name, len(sample_ids), filtered_snps,
-        ld_pairs_raw, data_hash, start, end, min_maf
+        ld_pairs_raw, data_hash, start, end, min_maf, include_failed_qc
     )
 
     return filtered_snps, ld_pairs_raw, original_snp_count, filtered_count
@@ -507,25 +483,9 @@ def compute_haplotype_blocks_endpoint(
     r2_threshold: float = 0.8,
     start: Optional[int] = None,
     end: Optional[int] = None,
-    min_maf: float = 0.0
+    min_maf: float = 0.0,
+    include_failed_qc: bool = False
 ) -> schemas.HaplotypeBlockOut:
-    """
-    Compute or retrieve cached haplotype blocks for a reference sequence.
-    
-    Args:
-        db: Database session
-        reference_name: Name of the reference sequence
-        r2_threshold: Minimum r² threshold for block membership (default 0.8)
-        start: Optional start position (1-based, inclusive)
-        end: Optional end position (1-based, inclusive)
-        min_maf: Minimum minor allele frequency threshold
-    
-    Returns:
-        HaplotypeBlockOut schema with block information and filter statistics
-    
-    Raises:
-        ValueError: if reference not found, fewer than 5 samples, or no SNPs
-    """
     if r2_threshold < 0 or r2_threshold > 1:
         raise ValueError("r² threshold must be between 0 and 1")
     if min_maf < 0 or min_maf > 0.5:
@@ -554,7 +514,7 @@ def compute_haplotype_blocks_endpoint(
     data_hash = _compute_data_hash(db, ref.id)
 
     cached = _check_haplotype_block_cache(
-        db, reference_name, r2_threshold, data_hash, start, end, min_maf
+        db, reference_name, r2_threshold, data_hash, start, end, min_maf, include_failed_qc
     )
     if cached:
         blocks = [
@@ -585,7 +545,7 @@ def compute_haplotype_blocks_endpoint(
         )
 
     snp_positions, ld_pairs_raw, original_snp_count, filtered_count = _get_ld_matrix_data(
-        db, ref.id, reference_name, start, end, min_maf
+        db, ref.id, reference_name, start, end, min_maf, include_failed_qc
     )
 
     if len(snp_positions) < 2:
@@ -602,7 +562,7 @@ def compute_haplotype_blocks_endpoint(
     _save_haplotype_block_result(
         db, ref.id, reference_name, r2_threshold,
         total_samples_actual, len(snp_positions), blocks_raw, data_hash,
-        start, end, min_maf
+        start, end, min_maf, include_failed_qc
     )
 
     blocks = [

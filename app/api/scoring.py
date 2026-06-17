@@ -56,9 +56,13 @@ def delete_rule(rule_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/samples/{sample_id}/score", response_model=schemas.SampleScoreOut)
-def score_sample(sample_id: int, db: Session = Depends(get_db)):
+def score_sample(
+    sample_id: int,
+    include_failed_qc: bool = Query(False, description="Include variants that failed QC"),
+    db: Session = Depends(get_db),
+):
     try:
-        return scoring_service.score_sample(db, sample_id)
+        return scoring_service.score_sample(db, sample_id, include_failed_qc=include_failed_qc)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

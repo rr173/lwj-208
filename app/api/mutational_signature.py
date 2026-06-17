@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -12,6 +12,7 @@ router = APIRouter(prefix="/api/mutational-signatures", tags=["mutational-signat
 @router.post("/spectrum", response_model=schemas.MutationalSpectrumOut)
 def build_spectrum(
     request: schemas.MutationalSpectrumRequest,
+    include_failed_qc: bool = Query(False, description="Include variants that failed QC"),
     db: Session = Depends(get_db),
 ):
     try:
@@ -19,6 +20,7 @@ def build_spectrum(
             db,
             sample_ids=request.sample_ids,
             reference_name=request.reference_name,
+            include_failed_qc=include_failed_qc,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -27,6 +29,7 @@ def build_spectrum(
 @router.post("/extract", response_model=schemas.NMFSignatureOut)
 def extract_signatures(
     request: schemas.NMFSignatureRequest,
+    include_failed_qc: bool = Query(False, description="Include variants that failed QC"),
     db: Session = Depends(get_db),
 ):
     try:
@@ -35,6 +38,7 @@ def extract_signatures(
             sample_ids=request.sample_ids,
             reference_name=request.reference_name,
             k_value=request.k_value,
+            include_failed_qc=include_failed_qc,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -43,6 +47,7 @@ def extract_signatures(
 @router.post("/optimal-k", response_model=schemas.OptimalKOut)
 def find_optimal_k(
     request: schemas.OptimalKRequest,
+    include_failed_qc: bool = Query(False, description="Include variants that failed QC"),
     db: Session = Depends(get_db),
 ):
     try:
@@ -50,6 +55,7 @@ def find_optimal_k(
             db,
             sample_ids=request.sample_ids,
             reference_name=request.reference_name,
+            include_failed_qc=include_failed_qc,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -81,6 +87,7 @@ def list_reference_signatures(
 @router.post("/temporal-analysis", response_model=schemas.SignatureTemporalAnalysisOut)
 def temporal_analysis(
     request: schemas.TemporalAnalysisRequest,
+    include_failed_qc: bool = Query(False, description="Include variants that failed QC"),
     db: Session = Depends(get_db),
 ):
     try:
@@ -90,6 +97,7 @@ def temporal_analysis(
             reference_name=request.reference_name,
             k_value=request.k_value,
             p_value_threshold=request.p_value_threshold,
+            include_failed_qc=include_failed_qc,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -98,6 +106,7 @@ def temporal_analysis(
 @router.post("/exposure-change", response_model=schemas.ExposureChangeOut)
 def exposure_change(
     request: schemas.ExposureChangeRequest,
+    include_failed_qc: bool = Query(False, description="Include variants that failed QC"),
     db: Session = Depends(get_db),
 ):
     try:
@@ -109,6 +118,7 @@ def exposure_change(
             end_date=request.end_date,
             k_value=request.k_value,
             aggregation=request.aggregation,
+            include_failed_qc=include_failed_qc,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
