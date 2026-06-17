@@ -39,6 +39,8 @@ def init_database():
             db.execute(text("ALTER TABLE pipeline_step_executions ADD COLUMN retry_count INTEGER DEFAULT 0"))
         if "last_error" not in step_cols:
             db.execute(text("ALTER TABLE pipeline_step_executions ADD COLUMN last_error TEXT"))
+        if "output_data" not in step_cols:
+            db.execute(text("ALTER TABLE pipeline_step_executions ADD COLUMN output_data JSON"))
 
         db.commit()
 

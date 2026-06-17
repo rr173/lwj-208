@@ -106,6 +106,7 @@ def execute_pipeline(
                     status=se.status,
                     input_params=se.input_params,
                     output_summary=se.output_summary,
+                    output_data=se.output_data,
                     error_message=se.error_message,
                     started_at=se.started_at,
                     completed_at=se.completed_at,

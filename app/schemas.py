@@ -1204,6 +1204,7 @@ class PipelineStepExecutionOut(BaseModel):
     status: str
     input_params: Dict[str, Any]
     output_summary: Optional[Dict[str, Any]] = None
+    output_data: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

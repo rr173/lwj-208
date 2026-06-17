@@ -202,19 +202,38 @@ def _summarize_output(step_type: str, output: Any) -> Dict[str, Any]:
     return summary
 
 
+def _make_json_safe(obj: Any) -> Any:
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    if isinstance(obj, (list, tuple)):
+        return [_make_json_safe(item) for item in obj]
+    if isinstance(obj, dict):
+        return {str(k): _make_json_safe(v) for k, v in obj.items()}
+    if hasattr(obj, "model_dump"):
+        try:
+            return _make_json_safe(obj.model_dump())
+        except Exception:
+            return str(obj)
+    if hasattr(obj, "__dict__"):
+        try:
+            return _make_json_safe(vars(obj))
+        except Exception:
+            return str(obj)
+    try:
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError):
+        return str(obj)
+
+
 def _output_to_dict(output: Any) -> Dict[str, Any]:
     if isinstance(output, dict):
-        return output
+        return _make_json_safe(output)
     result = {}
     for attr in dir(output):
         if not attr.startswith("_") and not callable(getattr(output, attr)):
             value = getattr(output, attr)
-            if isinstance(value, (str, int, float, bool, list, dict, type(None))):
-                result[attr] = value
-            elif hasattr(value, "model_dump"):
-                result[attr] = value.model_dump()
-            elif hasattr(value, "__dict__"):
-                result[attr] = str(value)
+            result[attr] = _make_json_safe(value)
     return result
 
 
@@ -346,6 +365,7 @@ def _run_single_step_with_retry(
 
             step_execution.status = "completed"
             step_execution.output_summary = output_summary
+            step_execution.output_data = output_dict
             step_execution.completed_at = datetime.utcnow()
             step_execution.duration_seconds = step_duration
             step_execution.last_error = None
@@ -550,6 +570,13 @@ def execute_pipeline(
             execution.total_duration_seconds = time.time() - pipeline_start_time
             db.commit()
 
+    except PipelineTimeoutError as e:
+        execution.status = "failed"
+        execution.error_message = f"Pipeline timed out after {PIPELINE_TIMEOUT_SECONDS}s: {str(e)}"
+        execution.completed_at = datetime.utcnow()
+        execution.total_duration_seconds = time.time() - pipeline_start_time
+        db.commit()
+
     finally:
         signal.alarm(0)
 
@@ -595,14 +622,13 @@ def resume_pipeline_execution(
     for i, (step_config, step_exec) in enumerate(zip(snapshot_steps, step_executions)):
         idx = i + 1
         step_key = f"step_{idx}"
-        if step_exec.status == "completed" and step_exec.output_summary is not None:
-            step_outputs[step_key] = {
-                "output": step_exec.output_summary,
-                "summary": step_exec.output_summary,
-            }
-            if step_exec.input_params:
-                for pk, pv in step_exec.output_summary.items():
-                    pass
+        if step_exec.status == "completed":
+            output_to_use = step_exec.output_data if step_exec.output_data is not None else step_exec.output_summary
+            if output_to_use is not None:
+                step_outputs[step_key] = {
+                    "output": output_to_use,
+                    "summary": step_exec.output_summary if step_exec.output_summary is not None else output_to_use,
+                }
             skipped_count += 1
             continue
         if step_exec.status == "skipped":
@@ -649,12 +675,14 @@ def resume_pipeline_execution(
             if execution.status != "running":
                 break
 
-            if step_execution.status == "completed" and step_execution.output_summary is not None:
+            if step_execution.status == "completed":
                 if step_key not in step_outputs:
-                    step_outputs[step_key] = {
-                        "output": step_execution.output_summary,
-                        "summary": step_execution.output_summary,
-                    }
+                    output_to_use = step_execution.output_data if step_execution.output_data is not None else step_execution.output_summary
+                    if output_to_use is not None:
+                        step_outputs[step_key] = {
+                            "output": output_to_use,
+                            "summary": step_execution.output_summary if step_execution.output_summary is not None else output_to_use,
+                        }
                 continue
             if step_execution.status == "skipped":
                 continue
@@ -689,6 +717,16 @@ def resume_pipeline_execution(
             else:
                 execution.total_duration_seconds += time.time() - pipeline_start_time
             db.commit()
+
+    except PipelineTimeoutError as e:
+        execution.status = "failed"
+        execution.error_message = f"Pipeline timed out after {PIPELINE_TIMEOUT_SECONDS}s during resume: {str(e)}"
+        execution.completed_at = datetime.utcnow()
+        if execution.total_duration_seconds is None:
+            execution.total_duration_seconds = time.time() - pipeline_start_time
+        else:
+            execution.total_duration_seconds += time.time() - pipeline_start_time
+        db.commit()
 
     finally:
         signal.alarm(0)

@@ -550,6 +550,7 @@ class PipelineStepExecution(Base):
     input_params = Column(JSON, nullable=False)
     status = Column(String, default="pending", index=True)
     output_summary = Column(JSON, nullable=True)
+    output_data = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
