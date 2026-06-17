@@ -1409,3 +1409,70 @@ class SampleSpectrumQCOut(BaseModel):
     stale_count: Optional[int] = None
     active_rule_set: Optional[str] = None
     variants: List[SpectrumVariantQCOut] = []
+
+
+class BatchQCRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=1, description="List of sample IDs to run QC on")
+
+
+class BatchQCSampleResult(BaseModel):
+    sample_id: int
+    sample_name: str
+    total_variants: int
+    pass_count: int
+    fail_count: int
+    pass_rate: float
+    error_message: Optional[str] = None
+
+
+class RuleFailCount(BaseModel):
+    rule_type: str
+    fail_count: int
+
+
+class BatchQCResultOut(BaseModel):
+    rule_set_id: int
+    rule_set_name: str
+    total_samples: int
+    processed_samples: int
+    failed_samples: int
+    average_pass_rate: float
+    sample_results: List[BatchQCSampleResult]
+    rule_fail_counts: List[RuleFailCount]
+    executed_at: datetime
+
+
+class QCBucketDistribution(BaseModel):
+    bucket_start: int
+    bucket_end: int
+    pass_count: int
+    fail_count: int
+    fail_density: float
+
+
+class HotspotRegion(BaseModel):
+    bucket_start: int
+    bucket_end: int
+    fail_count: int
+    fail_density: float
+    rank: int
+
+
+class RuleTypeStats(BaseModel):
+    rule_type: str
+    fail_count: int
+    fail_percentage: float
+
+
+class QCReportOut(BaseModel):
+    reference_name: str
+    reference_length: int
+    total_samples: int
+    total_variants: int
+    total_pass: int
+    total_fail: int
+    overall_pass_rate: float
+    bucket_distribution: List[QCBucketDistribution]
+    hotspot_regions: List[HotspotRegion]
+    rule_type_stats: List[RuleTypeStats]
+    generated_at: datetime

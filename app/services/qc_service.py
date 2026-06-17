@@ -471,3 +471,252 @@ def filter_spectrum_by_qc(
         if key in pass_keys:
             filtered.append(row)
     return filtered
+
+
+def execute_batch_qc(db: Session, sample_ids: List[int]) -> schemas.BatchQCResultOut:
+    active_rule_set = get_active_rule_set(db)
+    if not active_rule_set:
+        raise ValueError("No active QC rule set. Activate a rule set before running QC.")
+
+    rules = db.query(models.QCRule).filter(
+        models.QCRule.rule_set_id == active_rule_set.id
+    ).order_by(models.QCRule.rule_index).all()
+
+    if not rules:
+        raise ValueError(f"Active rule set '{active_rule_set.name}' has no rules.")
+
+    sample_results: List[schemas.BatchQCSampleResult] = []
+    rule_type_fail_counts: Dict[str, int] = {}
+    processed_samples = 0
+    failed_samples = 0
+    total_pass_rate_sum = 0.0
+
+    for sample_id in sample_ids:
+        sample = db.query(models.Sample).filter(models.Sample.id == sample_id).first()
+        if not sample:
+            sample_results.append(schemas.BatchQCSampleResult(
+                sample_id=sample_id,
+                sample_name="NOT_FOUND",
+                total_variants=0,
+                pass_count=0,
+                fail_count=0,
+                pass_rate=0.0,
+                error_message=f"Sample {sample_id} not found",
+            ))
+            failed_samples += 1
+            continue
+
+        try:
+            db.query(models.VariantQCResult).filter(
+                models.VariantQCResult.sample_id == sample_id
+            ).delete(synchronize_session=False)
+            db.flush()
+
+            spectrum_rows = db.query(models.SampleVariantSpectrum).filter(
+                models.SampleVariantSpectrum.sample_id == sample_id
+            ).order_by(
+                models.SampleVariantSpectrum.reference_id,
+                models.SampleVariantSpectrum.ref_pos,
+            ).all()
+
+            pass_count = 0
+            fail_count = 0
+
+            for row in spectrum_rows:
+                passed, failed_rules = _evaluate_variant_against_rules(
+                    db,
+                    sample_id,
+                    row.reference_id,
+                    row.ref_pos,
+                    row.variant_type,
+                    row.ref_base,
+                    row.alt_base,
+                    rules,
+                )
+
+                status = "PASS" if passed else "FAIL"
+                if passed:
+                    pass_count += 1
+                else:
+                    fail_count += 1
+                    for fr in failed_rules:
+                        rt = fr.get("rule_type", "unknown")
+                        rule_type_fail_counts[rt] = rule_type_fail_counts.get(rt, 0) + 1
+
+                qc_result = models.VariantQCResult(
+                    sample_id=sample_id,
+                    reference_id=row.reference_id,
+                    ref_pos=row.ref_pos,
+                    variant_type=row.variant_type,
+                    ref_base=row.ref_base,
+                    alt_base=row.alt_base,
+                    rule_set_id=active_rule_set.id,
+                    qc_status=status,
+                    failed_rules=failed_rules,
+                    is_stale=False,
+                )
+                db.add(qc_result)
+
+            total_variants = len(spectrum_rows)
+            pass_rate = pass_count / total_variants if total_variants > 0 else 0.0
+
+            sample_results.append(schemas.BatchQCSampleResult(
+                sample_id=sample_id,
+                sample_name=sample.name,
+                total_variants=total_variants,
+                pass_count=pass_count,
+                fail_count=fail_count,
+                pass_rate=round(pass_rate, 4),
+                error_message=None,
+            ))
+
+            processed_samples += 1
+            total_pass_rate_sum += pass_rate
+
+        except Exception as e:
+            failed_samples += 1
+            sample_results.append(schemas.BatchQCSampleResult(
+                sample_id=sample_id,
+                sample_name=sample.name,
+                total_variants=0,
+                pass_count=0,
+                fail_count=0,
+                pass_rate=0.0,
+                error_message=str(e),
+            ))
+
+    db.commit()
+
+    average_pass_rate = total_pass_rate_sum / processed_samples if processed_samples > 0 else 0.0
+
+    rule_fail_counts = [
+        schemas.RuleFailCount(rule_type=rt, fail_count=fc)
+        for rt, fc in sorted(rule_type_fail_counts.items(), key=lambda x: -x[1])
+    ]
+
+    return schemas.BatchQCResultOut(
+        rule_set_id=active_rule_set.id,
+        rule_set_name=active_rule_set.name,
+        total_samples=len(sample_ids),
+        processed_samples=processed_samples,
+        failed_samples=failed_samples,
+        average_pass_rate=round(average_pass_rate, 4),
+        sample_results=sample_results,
+        rule_fail_counts=rule_fail_counts,
+        executed_at=datetime.now(),
+    )
+
+
+def generate_qc_report_by_reference(db: Session, reference_name: str) -> schemas.QCReportOut:
+    ref = db.query(models.ReferenceSequence).filter(
+        models.ReferenceSequence.name == reference_name
+    ).first()
+    if not ref:
+        raise ValueError(f"Reference sequence '{reference_name}' not found")
+
+    reference_length = ref.length
+
+    all_results = db.query(models.VariantQCResult).filter(
+        models.VariantQCResult.reference_id == ref.id,
+        models.VariantQCResult.is_stale == False,
+    ).all()
+
+    if not all_results:
+        return schemas.QCReportOut(
+            reference_name=reference_name,
+            reference_length=reference_length,
+            total_samples=0,
+            total_variants=0,
+            total_pass=0,
+            total_fail=0,
+            overall_pass_rate=0.0,
+            bucket_distribution=[],
+            hotspot_regions=[],
+            rule_type_stats=[],
+            generated_at=datetime.now(),
+        )
+
+    total_variants = len(all_results)
+    total_pass = sum(1 for r in all_results if r.qc_status == "PASS")
+    total_fail = sum(1 for r in all_results if r.qc_status == "FAIL")
+    overall_pass_rate = total_pass / total_variants if total_variants > 0 else 0.0
+
+    sample_ids = set(r.sample_id for r in all_results)
+    total_samples = len(sample_ids)
+
+    BUCKET_SIZE = 500
+    num_buckets = (reference_length + BUCKET_SIZE - 1) // BUCKET_SIZE
+    bucket_data: List[Dict[str, int]] = [{"pass": 0, "fail": 0} for _ in range(num_buckets)]
+
+    rule_type_counts: Dict[str, int] = {}
+    total_rule_fail_events = 0
+
+    for r in all_results:
+        bucket_idx = min((r.ref_pos - 1) // BUCKET_SIZE, num_buckets - 1)
+        if r.qc_status == "PASS":
+            bucket_data[bucket_idx]["pass"] += 1
+        else:
+            bucket_data[bucket_idx]["fail"] += 1
+
+        if r.qc_status == "FAIL" and r.failed_rules:
+            rule_types_in_variant = set()
+            for fr in r.failed_rules:
+                rt = fr.get("rule_type")
+                if rt and rt not in rule_types_in_variant:
+                    rule_types_in_variant.add(rt)
+            for rt in rule_types_in_variant:
+                rule_type_counts[rt] = rule_type_counts.get(rt, 0) + 1
+                total_rule_fail_events += 1
+
+    bucket_distribution: List[schemas.QCBucketDistribution] = []
+    for idx, bd in enumerate(bucket_data):
+        start = idx * BUCKET_SIZE + 1
+        end = min((idx + 1) * BUCKET_SIZE, reference_length)
+        total = bd["pass"] + bd["fail"]
+        fail_density = bd["fail"] / BUCKET_SIZE if BUCKET_SIZE > 0 else 0.0
+        bucket_distribution.append(schemas.QCBucketDistribution(
+            bucket_start=start,
+            bucket_end=end,
+            pass_count=bd["pass"],
+            fail_count=bd["fail"],
+            fail_density=round(fail_density, 6),
+        ))
+
+    sorted_buckets = sorted(
+        bucket_distribution,
+        key=lambda b: (b.fail_density, b.fail_count),
+        reverse=True,
+    )
+    hotspot_regions: List[schemas.HotspotRegion] = []
+    for rank, b in enumerate(sorted_buckets[:10], 1):
+        if b.fail_count > 0:
+            hotspot_regions.append(schemas.HotspotRegion(
+                bucket_start=b.bucket_start,
+                bucket_end=b.bucket_end,
+                fail_count=b.fail_count,
+                fail_density=b.fail_density,
+                rank=rank,
+            ))
+
+    rule_type_stats: List[schemas.RuleTypeStats] = []
+    for rt, count in sorted(rule_type_counts.items(), key=lambda x: -x[1]):
+        pct = (count / total_rule_fail_events * 100) if total_rule_fail_events > 0 else 0.0
+        rule_type_stats.append(schemas.RuleTypeStats(
+            rule_type=rt,
+            fail_count=count,
+            fail_percentage=round(pct, 2),
+        ))
+
+    return schemas.QCReportOut(
+        reference_name=reference_name,
+        reference_length=reference_length,
+        total_samples=total_samples,
+        total_variants=total_variants,
+        total_pass=total_pass,
+        total_fail=total_fail,
+        overall_pass_rate=round(overall_pass_rate, 4),
+        bucket_distribution=bucket_distribution,
+        hotspot_regions=hotspot_regions,
+        rule_type_stats=rule_type_stats,
+        generated_at=datetime.now(),
+    )

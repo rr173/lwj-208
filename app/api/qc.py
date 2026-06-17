@@ -111,3 +111,25 @@ def get_sample_qc_results(
         return qc_service.get_sample_qc_results(db, sample_id, qc_status=qc_status)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/batch/execute", response_model=schemas.BatchQCResultOut)
+def execute_batch_qc(
+    request: schemas.BatchQCRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return qc_service.execute_batch_qc(db, request.sample_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/report/{reference_name}", response_model=schemas.QCReportOut)
+def get_qc_report(
+    reference_name: str,
+    db: Session = Depends(get_db),
+):
+    try:
+        return qc_service.generate_qc_report_by_reference(db, reference_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
