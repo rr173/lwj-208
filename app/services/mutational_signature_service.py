@@ -24,6 +24,12 @@ from app.mutation_signature.matrix_ops import (
 from app.mutation_signature.reference_signatures import (
     seed_reference_signatures,
 )
+from app.mutation_signature.temporal_analysis import (
+    linear_regression,
+    determine_trend,
+    mean,
+    median,
+)
 
 
 def _get_reference_or_error(db: Session, reference_name: str) -> models.ReferenceSequence:
@@ -499,3 +505,212 @@ def invalidate_signature_results_for_samples(db: Session, sample_ids: List[int])
             cache.is_stale = True
 
     db.commit()
+
+
+def analyze_signature_temporal_trends(
+    db: Session,
+    sample_ids: List[int],
+    reference_name: str,
+    k_value: Optional[int] = None,
+    p_value_threshold: float = 0.05,
+) -> schemas.SignatureTemporalAnalysisOut:
+    reference = _get_reference_or_error(db, reference_name)
+    samples = _get_samples_or_error(db, sample_ids)
+    sorted_ids = sorted(sample_ids)
+
+    actual_k = k_value
+    if actual_k is None:
+        optimal_k_out = find_optimal_k_value(db, sorted_ids, reference_name)
+        actual_k = optimal_k_out.recommended_k
+
+    nmf_out = extract_signatures(db, sorted_ids, reference_name, actual_k)
+
+    sample_id_to_date = {}
+    sample_id_to_name = {}
+    samples_with_date = []
+    samples_without_date = []
+
+    for sample in samples:
+        sample_id_to_name[sample.id] = sample.name
+        if sample.collection_date is not None:
+            sample_id_to_date[sample.id] = sample.collection_date
+            samples_with_date.append(sample.id)
+        else:
+            samples_without_date.append(sample.id)
+
+    if len(samples_with_date) < 3:
+        raise ValueError(
+            f"At least 3 samples with collection dates are required for temporal analysis. "
+            f"Found {len(samples_with_date)} samples with dates."
+        )
+
+    temporal_data_by_signature = {}
+    for sig_idx in range(actual_k):
+        temporal_data_by_signature[sig_idx] = []
+
+    for exposure in nmf_out.exposures:
+        sample_id = exposure.sample_id
+        if sample_id in sample_id_to_date:
+            collection_date = sample_id_to_date[sample_id]
+            sample_name = sample_id_to_name[sample_id]
+            for sig_idx, exp_val in enumerate(exposure.signature_exposures):
+                temporal_data_by_signature[sig_idx].append({
+                    'sample_id': sample_id,
+                    'sample_name': sample_name,
+                    'collection_date': collection_date,
+                    'exposure': exp_val,
+                })
+
+    sig_temporal_analyses = []
+    significant_rising = []
+    significant_falling = []
+
+    for sig_idx in range(actual_k):
+        points = temporal_data_by_signature[sig_idx]
+        points.sort(key=lambda p: p['collection_date'])
+
+        x_days = []
+        y_exposures = []
+        earliest_date = points[0]['collection_date']
+        for p in points:
+            delta = p['collection_date'] - earliest_date
+            x_days.append(delta.total_seconds() / 86400.0)
+            y_exposures.append(p['exposure'])
+
+        slope, intercept, r_squared, p_value = linear_regression(x_days, y_exposures)
+        trend = determine_trend(slope, p_value, p_value_threshold)
+
+        if p_value < p_value_threshold:
+            if slope > 0:
+                significant_rising.append(sig_idx)
+            else:
+                significant_falling.append(sig_idx)
+
+        temporal_points = []
+        for p in points:
+            temporal_points.append(schemas.SignatureTemporalPoint(
+                sample_id=p['sample_id'],
+                sample_name=p['sample_name'],
+                collection_date=p['collection_date'],
+                exposure=p['exposure'],
+            ))
+
+        regression_result = schemas.LinearRegressionResult(
+            slope=round(slope, 10),
+            intercept=round(intercept, 10),
+            r_squared=round(r_squared, 6),
+            p_value=round(p_value, 10),
+            trend=trend,
+        )
+
+        sig_analysis = schemas.SignatureTemporalAnalysis(
+            signature_index=sig_idx,
+            temporal_points=temporal_points,
+            regression=regression_result,
+        )
+        sig_temporal_analyses.append(sig_analysis)
+
+    return schemas.SignatureTemporalAnalysisOut(
+        reference_name=reference_name,
+        k_value=actual_k,
+        sample_ids=sorted_ids,
+        sample_names=nmf_out.sample_names,
+        samples_with_date=len(samples_with_date),
+        samples_without_date=len(samples_without_date),
+        excluded_sample_ids=samples_without_date,
+        signatures=sig_temporal_analyses,
+        total_signatures=actual_k,
+        significant_rising=significant_rising,
+        significant_falling=significant_falling,
+        p_value_threshold=p_value_threshold,
+        created_at=datetime.now(),
+    )
+
+
+def calculate_exposure_change_between_dates(
+    db: Session,
+    sample_ids: List[int],
+    reference_name: str,
+    start_date: datetime,
+    end_date: datetime,
+    k_value: Optional[int] = None,
+    aggregation: str = "mean",
+) -> schemas.ExposureChangeOut:
+    if start_date >= end_date:
+        raise ValueError("start_date must be earlier than end_date")
+
+    reference = _get_reference_or_error(db, reference_name)
+    samples = _get_samples_or_error(db, sample_ids)
+    sorted_ids = sorted(sample_ids)
+
+    actual_k = k_value
+    if actual_k is None:
+        optimal_k_out = find_optimal_k_value(db, sorted_ids, reference_name)
+        actual_k = optimal_k_out.recommended_k
+
+    nmf_out = extract_signatures(db, sorted_ids, reference_name, actual_k)
+
+    sample_id_to_date = {}
+    sample_id_to_name = {}
+    for sample in samples:
+        sample_id_to_name[sample.id] = sample.name
+        if sample.collection_date is not None:
+            sample_id_to_date[sample.id] = sample.collection_date
+
+    start_exposures_by_sig = [[] for _ in range(actual_k)]
+    end_exposures_by_sig = [[] for _ in range(actual_k)]
+
+    start_sample_count = 0
+    end_sample_count = 0
+
+    for exposure in nmf_out.exposures:
+        sample_id = exposure.sample_id
+        if sample_id not in sample_id_to_date:
+            continue
+        sample_date = sample_id_to_date[sample_id]
+
+        if sample_date <= start_date:
+            start_sample_count += 1
+            for sig_idx, exp_val in enumerate(exposure.signature_exposures):
+                start_exposures_by_sig[sig_idx].append(exp_val)
+        elif sample_date >= end_date:
+            end_sample_count += 1
+            for sig_idx, exp_val in enumerate(exposure.signature_exposures):
+                end_exposures_by_sig[sig_idx].append(exp_val)
+
+    if start_sample_count == 0:
+        raise ValueError(f"No samples found with collection_date <= start_date ({start_date})")
+    if end_sample_count == 0:
+        raise ValueError(f"No samples found with collection_date >= end_date ({end_date})")
+
+    agg_func = mean if aggregation == "mean" else median
+
+    changes = []
+    for sig_idx in range(actual_k):
+        start_exp = agg_func(start_exposures_by_sig[sig_idx])
+        end_exp = agg_func(end_exposures_by_sig[sig_idx])
+        abs_change = end_exp - start_exp
+        if start_exp != 0:
+            pct_change = (abs_change / start_exp) * 100.0
+        else:
+            pct_change = float('inf') if end_exp > 0 else 0.0
+
+        changes.append(schemas.SignatureExposureChange(
+            signature_index=sig_idx,
+            start_exposure=round(start_exp, 10),
+            end_exposure=round(end_exp, 10),
+            absolute_change=round(abs_change, 10),
+            percent_change=round(pct_change, 6),
+        ))
+
+    return schemas.ExposureChangeOut(
+        reference_name=reference_name,
+        k_value=actual_k,
+        start_date=start_date,
+        end_date=end_date,
+        aggregation=aggregation,
+        start_sample_count=start_sample_count,
+        end_sample_count=end_sample_count,
+        changes=changes,
+        total_signatures=actual_k,
+    )

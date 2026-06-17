@@ -76,3 +76,39 @@ def list_reference_signatures(
     db: Session = Depends(get_db),
 ):
     return mutational_signature_service.list_reference_signatures(db)
+
+
+@router.post("/temporal-analysis", response_model=schemas.SignatureTemporalAnalysisOut)
+def temporal_analysis(
+    request: schemas.TemporalAnalysisRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return mutational_signature_service.analyze_signature_temporal_trends(
+            db,
+            sample_ids=request.sample_ids,
+            reference_name=request.reference_name,
+            k_value=request.k_value,
+            p_value_threshold=request.p_value_threshold,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/exposure-change", response_model=schemas.ExposureChangeOut)
+def exposure_change(
+    request: schemas.ExposureChangeRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return mutational_signature_service.calculate_exposure_change_between_dates(
+            db,
+            sample_ids=request.sample_ids,
+            reference_name=request.reference_name,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            k_value=request.k_value,
+            aggregation=request.aggregation,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

@@ -1016,3 +1016,76 @@ class SignatureComparisonOut(BaseModel):
 class ReferenceSignatureListOut(BaseModel):
     total: int
     signatures: List[ReferenceSignatureOut] = []
+
+
+class SignatureTemporalPoint(BaseModel):
+    sample_id: int
+    sample_name: str
+    collection_date: datetime
+    exposure: float
+
+
+class LinearRegressionResult(BaseModel):
+    slope: float
+    intercept: float
+    r_squared: float
+    p_value: float
+    trend: str
+
+
+class SignatureTemporalAnalysis(BaseModel):
+    signature_index: int
+    temporal_points: List[SignatureTemporalPoint]
+    regression: LinearRegressionResult
+
+
+class SignatureTemporalAnalysisOut(BaseModel):
+    reference_name: str
+    k_value: int
+    sample_ids: List[int]
+    sample_names: List[str]
+    samples_with_date: int
+    samples_without_date: int
+    excluded_sample_ids: List[int]
+    signatures: List[SignatureTemporalAnalysis]
+    total_signatures: int
+    significant_rising: List[int] = []
+    significant_falling: List[int] = []
+    p_value_threshold: float = 0.05
+    created_at: Optional[datetime] = None
+
+
+class TemporalAnalysisRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=5, max_length=200)
+    reference_name: str = Field(..., min_length=1)
+    k_value: Optional[int] = Field(None, ge=2, le=10)
+    p_value_threshold: float = Field(0.05, gt=0, lt=1)
+
+
+class SignatureExposureChange(BaseModel):
+    signature_index: int
+    start_exposure: float
+    end_exposure: float
+    absolute_change: float
+    percent_change: float
+
+
+class ExposureChangeRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=5, max_length=200)
+    reference_name: str = Field(..., min_length=1)
+    start_date: datetime
+    end_date: datetime
+    k_value: Optional[int] = Field(None, ge=2, le=10)
+    aggregation: str = Field("mean", pattern="^(mean|median)$")
+
+
+class ExposureChangeOut(BaseModel):
+    reference_name: str
+    k_value: int
+    start_date: datetime
+    end_date: datetime
+    aggregation: str
+    start_sample_count: int
+    end_sample_count: int
+    changes: List[SignatureExposureChange]
+    total_signatures: int
