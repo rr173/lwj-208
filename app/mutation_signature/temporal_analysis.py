@@ -158,26 +158,28 @@ def linear_regression(
     
     if ss_tot == 0.0:
         r_squared = 1.0
-    else:
-        r_squared = 1.0 - ss_res / ss_tot
-    
-    df = n - 2
-    if df <= 0 or ss_xx == 0.0:
         p_value = 1.0
     else:
-        mse = ss_res / df
-        se_slope = math.sqrt(mse / ss_xx)
-        if se_slope == 0.0:
-            p_value = 0.0
+        r_squared = 1.0 - ss_res / ss_tot
+        df = n - 2
+        if df <= 0 or ss_xx == 0.0:
+            p_value = 1.0
         else:
-            t_stat = slope / se_slope
-            p_value = t_test_two_tailed(t_stat, df)
+            mse = ss_res / df
+            se_slope = math.sqrt(mse / ss_xx)
+            if se_slope == 0.0:
+                p_value = 0.0 if slope != 0.0 else 1.0
+            else:
+                t_stat = slope / se_slope
+                p_value = t_test_two_tailed(t_stat, df)
     
     return slope, intercept, r_squared, p_value
 
 
 def determine_trend(slope: float, p_value: float, p_threshold: float = 0.05) -> str:
     if p_value >= p_threshold:
+        return "stable"
+    if abs(slope) < 1e-15:
         return "stable"
     if slope > 0:
         return "rising"

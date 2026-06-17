@@ -1067,7 +1067,8 @@ class SignatureExposureChange(BaseModel):
     start_exposure: float
     end_exposure: float
     absolute_change: float
-    percent_change: float
+    percent_change: Optional[float] = None
+    percent_change_available: bool = True
 
 
 class ExposureChangeRequest(BaseModel):

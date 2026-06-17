@@ -690,17 +690,22 @@ def calculate_exposure_change_between_dates(
         start_exp = agg_func(start_exposures_by_sig[sig_idx])
         end_exp = agg_func(end_exposures_by_sig[sig_idx])
         abs_change = end_exp - start_exp
-        if start_exp != 0:
-            pct_change = (abs_change / start_exp) * 100.0
+        
+        if abs(start_exp) < 1e-15:
+            pct_change = None
+            pct_available = False
         else:
-            pct_change = float('inf') if end_exp > 0 else 0.0
+            pct_change = (abs_change / start_exp) * 100.0
+            pct_change = round(pct_change, 6)
+            pct_available = True
 
         changes.append(schemas.SignatureExposureChange(
             signature_index=sig_idx,
             start_exposure=round(start_exp, 10),
             end_exposure=round(end_exp, 10),
             absolute_change=round(abs_change, 10),
-            percent_change=round(pct_change, 6),
+            percent_change=pct_change,
+            percent_change_available=pct_available,
         ))
 
     return schemas.ExposureChangeOut(
