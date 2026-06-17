@@ -136,28 +136,18 @@ def _get_coverage_depth_for_variant(
     ref_base: str,
     alt_base: str,
 ) -> int:
-    spectrum = db.query(models.SampleVariantSpectrum).filter(
-        models.SampleVariantSpectrum.sample_id == sample_id,
-        models.SampleVariantSpectrum.reference_id == reference_id,
-        models.SampleVariantSpectrum.ref_pos == ref_pos,
-        models.SampleVariantSpectrum.variant_type == variant_type,
-        models.SampleVariantSpectrum.ref_base == ref_base,
-        models.SampleVariantSpectrum.alt_base == alt_base,
-    ).first()
-
-    if not spectrum or not spectrum.source_alignment_ids:
-        return 0
-
-    alignment_ids = spectrum.source_alignment_ids
-    alignments = db.query(models.AlignmentResult).filter(
-        models.AlignmentResult.id.in_(alignment_ids)
-    ).all()
-
-    unique_query_hashes: Set[str] = set()
-    for aln in alignments:
-        unique_query_hashes.add(aln.query_hash)
-
-    return len(unique_query_hashes)
+    count = db.query(func.count(func.distinct(models.Variant.alignment_id))).join(
+        models.SampleAlignmentLink,
+        models.SampleAlignmentLink.alignment_id == models.Variant.alignment_id
+    ).filter(
+        models.SampleAlignmentLink.sample_id == sample_id,
+        models.Variant.reference_id == reference_id,
+        models.Variant.ref_pos == ref_pos,
+        models.Variant.variant_type == variant_type,
+        models.Variant.ref_base == ref_base,
+        models.Variant.alt_base == alt_base,
+    ).scalar() or 0
+    return count
 
 
 def _get_best_alignment_score_for_variant(
@@ -169,20 +159,19 @@ def _get_best_alignment_score_for_variant(
     ref_base: str,
     alt_base: str,
 ) -> Optional[int]:
-    spectrum = db.query(models.SampleVariantSpectrum).filter(
-        models.SampleVariantSpectrum.sample_id == sample_id,
-        models.SampleVariantSpectrum.reference_id == reference_id,
-        models.SampleVariantSpectrum.ref_pos == ref_pos,
-        models.SampleVariantSpectrum.variant_type == variant_type,
-        models.SampleVariantSpectrum.ref_base == ref_base,
-        models.SampleVariantSpectrum.alt_base == alt_base,
-    ).first()
-
-    if not spectrum or not spectrum.source_alignment_ids:
-        return None
-
-    max_score = db.query(func.max(models.AlignmentResult.score)).filter(
-        models.AlignmentResult.id.in_(spectrum.source_alignment_ids)
+    max_score = db.query(func.max(models.AlignmentResult.score)).join(
+        models.Variant,
+        models.Variant.alignment_id == models.AlignmentResult.id
+    ).join(
+        models.SampleAlignmentLink,
+        models.SampleAlignmentLink.alignment_id == models.AlignmentResult.id
+    ).filter(
+        models.SampleAlignmentLink.sample_id == sample_id,
+        models.Variant.reference_id == reference_id,
+        models.Variant.ref_pos == ref_pos,
+        models.Variant.variant_type == variant_type,
+        models.Variant.ref_base == ref_base,
+        models.Variant.alt_base == alt_base,
     ).scalar()
 
     return max_score

@@ -124,24 +124,24 @@ def _get_snp_data_for_reference(
     samples = db.query(models.Sample).order_by(models.Sample.id).all()
     sample_ids = [s.id for s in samples]
 
-    all_snps = db.query(models.SampleVariantSpectrum).filter(
+    all_snps_raw = db.query(models.SampleVariantSpectrum).filter(
         models.SampleVariantSpectrum.reference_id == reference_id,
         models.SampleVariantSpectrum.variant_type == "SNP",
     ).all()
 
     if not include_failed_qc:
-        filtered_snps = []
-        for snp in all_snps:
-            pass_keys = qc_service.get_pass_variant_keys_for_sample(
-                db, snp.sample_id, include_failed_qc=False
+        snps_by_sample: Dict[int, List[models.SampleVariantSpectrum]] = {}
+        for snp in all_snps_raw:
+            snps_by_sample.setdefault(snp.sample_id, []).append(snp)
+
+        all_snps = []
+        for sid, snp_list in snps_by_sample.items():
+            filtered = qc_service.filter_spectrum_by_qc(
+                db, snp_list, sid, include_failed_qc=False
             )
-            if pass_keys is None:
-                filtered_snps.append(snp)
-            else:
-                key = (snp.reference_id, snp.ref_pos, snp.variant_type, snp.ref_base, snp.alt_base)
-                if key in pass_keys:
-                    filtered_snps.append(snp)
-        all_snps = filtered_snps
+            all_snps.extend(filtered)
+    else:
+        all_snps = all_snps_raw
 
     snp_positions_set = set()
     genotypes_by_sample: Dict[int, Dict[int, bool]] = {sid: {} for sid in sample_ids}
