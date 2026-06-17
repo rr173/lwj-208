@@ -499,3 +499,58 @@ class ReferenceSignature(Base):
     mutation_types = Column(JSON, nullable=False)
     probabilities = Column(JSON, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+VALID_PIPELINE_STEP_TYPES = [
+    "spectrum", "nmf_extract", "scoring", "ld_analysis", "temporal_analysis"
+]
+
+PIPELINE_STATUSES = ["pending", "running", "completed", "skipped", "failed"]
+
+
+class PipelineTemplate(Base):
+    __tablename__ = "pipeline_templates"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True, nullable=False)
+    description = Column(Text, default="")
+    steps = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    executions = relationship("PipelineExecution", back_populates="template", cascade="all, delete-orphan")
+
+
+class PipelineExecution(Base):
+    __tablename__ = "pipeline_executions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    template_id = Column(Integer, ForeignKey("pipeline_templates.id"), nullable=False)
+    initial_params = Column(JSON, nullable=False)
+    status = Column(String, default="pending", index=True)
+    total_duration_seconds = Column(Float, nullable=True)
+    error_message = Column(Text, nullable=True)
+    triggered_at = Column(DateTime(timezone=True), server_default=func.now())
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    template = relationship("PipelineTemplate", back_populates="executions")
+    step_executions = relationship("PipelineStepExecution", back_populates="execution", cascade="all, delete-orphan", order_by="PipelineStepExecution.step_index")
+
+
+class PipelineStepExecution(Base):
+    __tablename__ = "pipeline_step_executions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    execution_id = Column(Integer, ForeignKey("pipeline_executions.id"), nullable=False)
+    step_index = Column(Integer, nullable=False)
+    step_type = Column(String, nullable=False)
+    step_name = Column(String, nullable=False)
+    input_params = Column(JSON, nullable=False)
+    status = Column(String, default="pending", index=True)
+    output_summary = Column(JSON, nullable=True)
+    error_message = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+
+    execution = relationship("PipelineExecution", back_populates="step_executions")

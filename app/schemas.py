@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -1090,3 +1090,151 @@ class ExposureChangeOut(BaseModel):
     end_sample_count: int
     changes: List[SignatureExposureChange]
     total_signatures: int
+
+
+PIPELINE_STEP_TYPES = ["spectrum", "nmf_extract", "scoring", "ld_analysis", "temporal_analysis"]
+PIPELINE_STATUSES = ["pending", "running", "completed", "skipped", "failed"]
+
+
+class PipelineStepInputParam(BaseModel):
+    name: str = Field(..., min_length=1)
+    value: Optional[Any] = None
+    from_step: Optional[str] = Field(None, description="Field path expression, e.g. 'step_1.output.sample_ids'")
+
+    @model_validator(mode="after")
+    def check_value_or_from_step(self):
+        if self.value is None and self.from_step is None:
+            raise ValueError("Either 'value' or 'from_step' must be provided")
+        if self.value is not None and self.from_step is not None:
+            raise ValueError("Only one of 'value' or 'from_step' can be provided")
+        return self
+
+
+class PipelineStepCondition(BaseModel):
+    expression: str = Field(..., description="Condition expression, e.g. 'step_1.output.sample_count > 5'")
+
+
+class PipelineStepCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    step_type: str = Field(..., pattern="|".join(PIPELINE_STEP_TYPES))
+    input_params: List[PipelineStepInputParam] = []
+    condition: Optional[PipelineStepCondition] = None
+
+
+class PipelineStepOut(BaseModel):
+    name: str
+    step_type: str
+    input_params: List[PipelineStepInputParam]
+    condition: Optional[PipelineStepCondition] = None
+
+
+class PipelineTemplateCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = ""
+    steps: List[PipelineStepCreate] = Field(..., min_length=1)
+
+    @model_validator(mode="after")
+    def check_step_order(self):
+        step_names = set()
+        for i, step in enumerate(self.steps):
+            if step.name in step_names:
+                raise ValueError(f"Duplicate step name: {step.name}")
+            step_names.add(step.name)
+            for param in step.input_params:
+                if param.from_step:
+                    if param.from_step.startswith("initial."):
+                        continue
+                    if not param.from_step.startswith("step_"):
+                        raise ValueError(
+                            f"Invalid from_step format: {param.from_step}. "
+                            f"Must start with 'initial.' or 'step_'"
+                        )
+                    try:
+                        step_ref = param.from_step.split(".")[0]
+                        step_num = int(step_ref.replace("step_", ""))
+                        if step_num < 1 or step_num > i:
+                            raise ValueError(
+                                f"Invalid from_step reference: {param.from_step}. "
+                                f"Can only reference steps 1 to {i} (current step is {i+1})"
+                            )
+                    except (ValueError, IndexError):
+                        raise ValueError(f"Invalid from_step format: {param.from_step}")
+            if step.condition:
+                expr = step.condition.expression
+                valid_prefixes = [f"step_{s}.summary." for s in range(1, i + 1)]
+                valid_prefixes += [f"step_{s}.output." for s in range(1, i + 1)]
+                if not any(expr.startswith(prefix) for prefix in valid_prefixes):
+                    raise ValueError(
+                        f"Invalid condition expression: must reference previous steps "
+                        f"using 'step_X.summary.field' or 'step_X.output.field' (step_1 to step_{i})"
+                    )
+        return self
+
+
+class PipelineTemplateUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=255)
+    description: Optional[str] = None
+    steps: Optional[List[PipelineStepCreate]] = Field(None, min_length=1)
+
+
+class PipelineTemplateOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    steps: List[PipelineStepOut]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class PipelineExecutionTrigger(BaseModel):
+    initial_params: Dict[str, Any] = Field(..., description="Initial parameters for the pipeline")
+
+
+class PipelineStepExecutionOut(BaseModel):
+    step_index: int
+    step_name: str
+    step_type: str
+    status: str
+    input_params: Dict[str, Any]
+    output_summary: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    duration_seconds: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PipelineExecutionOut(BaseModel):
+    id: int
+    template_id: int
+    template_name: str
+    status: str
+    initial_params: Dict[str, Any]
+    total_duration_seconds: Optional[float] = None
+    error_message: Optional[str] = None
+    triggered_at: datetime
+    completed_at: Optional[datetime] = None
+    step_executions: List[PipelineStepExecutionOut] = []
+
+    class Config:
+        from_attributes = True
+
+
+class PipelineExecutionSummaryOut(BaseModel):
+    id: int
+    template_id: int
+    template_name: str
+    status: str
+    initial_params: Dict[str, Any]
+    total_duration_seconds: Optional[float] = None
+    error_message: Optional[str] = None
+    triggered_at: datetime
+    completed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
