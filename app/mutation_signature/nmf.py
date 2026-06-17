@@ -1,7 +1,8 @@
 from typing import List, Tuple, Dict
 from .matrix_ops import (
     matmul, transpose, elementwise_multiply, elementwise_divide,
-    frobenius_norm, subtract, create_random_matrix, normalize_columns, normalize_rows
+    frobenius_norm, subtract, create_random_matrix, normalize_columns, normalize_rows,
+    dot_product
 )
 
 
@@ -100,6 +101,111 @@ def compute_reconstruction_error(
     return frobenius_norm(diff)
 
 
+def _upgma_cluster(dist_matrix: List[List[float]]) -> List[Tuple[int, int, float]]:
+    n = len(dist_matrix)
+    if n <= 1:
+        return []
+
+    active = [True] * n
+    sizes = [1] * n
+    cluster_map = {i: i for i in range(n)}
+    next_id = n
+    merges = []
+    dist = [[dist_matrix[i][j] for j in range(n)] for i in range(n)]
+    max_id = n
+    row_cache = {}
+
+    def get_dist(a: int, b: int) -> float:
+        key = (min(a, b), max(a, b))
+        if key in row_cache:
+            return row_cache[key]
+        return dist[a][b] if a < max_id and b < max_id else 0.0
+
+    remaining = list(range(n))
+
+    for step in range(n - 1):
+        min_dist = float('inf')
+        merge_i = -1
+        merge_j = -1
+        for idx_a in range(len(remaining)):
+            for idx_b in range(idx_a + 1, len(remaining)):
+                a = remaining[idx_a]
+                b = remaining[idx_b]
+                d = get_dist(a, b)
+                if d < min_dist:
+                    min_dist = d
+                    merge_i = a
+                    merge_j = b
+
+        new_id = next_id
+        next_id += 1
+        sizes.append(sizes[merge_i] + sizes[merge_j])
+        active.append(True)
+
+        new_dists = {}
+        for other in remaining:
+            if other == merge_i or other == merge_j:
+                continue
+            d_i = get_dist(min(merge_i, other), max(merge_i, other))
+            d_j = get_dist(min(merge_j, other), max(merge_j, other))
+            new_d = (d_i * sizes[merge_i] + d_j * sizes[merge_j]) / (sizes[merge_i] + sizes[merge_j])
+            key = (min(new_id, other), max(new_id, other))
+            row_cache[key] = new_d
+
+        merges.append((merge_i, merge_j, min_dist))
+
+        remaining = [r for r in remaining if r != merge_i and r != merge_j]
+        remaining.append(new_id)
+
+    return merges
+
+
+def _cophenetic_distances(
+    merges: List[Tuple[int, int, float]],
+    n_items: int,
+) -> List[List[float]]:
+    coph = [[0.0] * n_items for _ in range(n_items)]
+    cluster_members = {i: [i] for i in range(n_items)}
+    next_id = n_items
+
+    for a, b, height in merges:
+        members_a = cluster_members.get(a, [a])
+        members_b = cluster_members.get(b, [b])
+        for i in members_a:
+            for j in members_b:
+                coph[i][j] = height
+                coph[j][i] = height
+        combined = members_a + members_b
+        cluster_members[next_id] = combined
+        next_id += 1
+
+    return coph
+
+
+def _pearson_correlation(x: List[float], y: List[float]) -> float:
+    n = len(x)
+    if n < 2:
+        return 0.0
+
+    mean_x = sum(x) / n
+    mean_y = sum(y) / n
+
+    num = 0.0
+    denom_x = 0.0
+    denom_y = 0.0
+    for i in range(n):
+        dx = x[i] - mean_x
+        dy = y[i] - mean_y
+        num += dx * dy
+        denom_x += dx * dx
+        denom_y += dy * dy
+
+    if denom_x == 0.0 or denom_y == 0.0:
+        return 0.0
+
+    return num / ((denom_x ** 0.5) * (denom_y ** 0.5))
+
+
 def cophenetic_correlation(
     connectivity_matrices: List[List[List[float]]]
 ) -> float:
@@ -116,20 +222,22 @@ def cophenetic_correlation(
                 consensus[i][j] += cm[i][j]
             consensus[i][j] /= n_runs
 
-    dispersion = 0.0
-    total_pairs = 0
+    dist = [[0.0 for _ in range(n_samples)] for _ in range(n_samples)]
+    for i in range(n_samples):
+        for j in range(n_samples):
+            dist[i][j] = 1.0 - consensus[i][j]
+
+    merges = _upgma_cluster(dist)
+    coph_dist = _cophenetic_distances(merges, n_samples)
+
+    original_vals = []
+    coph_vals = []
     for i in range(n_samples):
         for j in range(i + 1, n_samples):
-            c = consensus[i][j]
-            dispersion += c * (1 - c)
-            total_pairs += 1
+            original_vals.append(dist[i][j])
+            coph_vals.append(coph_dist[i][j])
 
-    if total_pairs == 0:
-        return 1.0
-
-    avg_dispersion = dispersion / total_pairs
-    stability = 1.0 - 4.0 * avg_dispersion
-    return max(0.0, min(1.0, stability))
+    return _pearson_correlation(original_vals, coph_vals)
 
 
 def sample_connectivity_matrix(

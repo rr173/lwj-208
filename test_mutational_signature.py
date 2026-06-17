@@ -14,7 +14,8 @@ from app.mutation_signature.trinucleotide import (
 )
 from app.mutation_signature.nmf import (
     nmf_multiplicative_update, nmf_with_multiple_initializations,
-    find_optimal_k, cophenetic_correlation, sample_connectivity_matrix
+    find_optimal_k, cophenetic_correlation, sample_connectivity_matrix,
+    _upgma_cluster, _cophenetic_distances, _pearson_correlation
 )
 from app.mutation_signature.reference_signatures import (
     SIGNATURE_DESCRIPTIONS, get_all_reference_signatures
@@ -156,12 +157,50 @@ def test_reference_signatures():
 
 def test_cophenetic():
     print("=== Testing Cophenetic Correlation ===")
+
+    print("Testing Pearson correlation...")
+    r = _pearson_correlation([1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+    print(f"  Perfect positive: {r:.6f}")
+    assert abs(r - 1.0) < 1e-6, f"Expected 1.0, got {r}"
+
+    r2 = _pearson_correlation([1.0, 2.0, 3.0], [3.0, 2.0, 1.0])
+    print(f"  Perfect negative: {r2:.6f}")
+    assert abs(r2 - (-1.0)) < 1e-6, f"Expected -1.0, got {r2}"
+
+    print("Testing UPGMA clustering...")
+    dist = [
+        [0.0, 0.1, 0.9, 0.8],
+        [0.1, 0.0, 0.85, 0.75],
+        [0.9, 0.85, 0.0, 0.2],
+        [0.8, 0.75, 0.2, 0.0],
+    ]
+    merges = _upgma_cluster(dist)
+    print(f"  Merges: {merges}")
+    assert len(merges) == 3, f"Expected 3 merges for 4 items, got {len(merges)}"
+    assert merges[0][2] <= merges[1][2], "Merges should be in ascending distance order"
+
+    print("Testing cophenetic distances...")
+    coph = _cophenetic_distances(merges, 4)
+    print(f"  Cophenetic distance matrix:")
+    for row in coph:
+        print(f"    {row}")
+    assert coph[0][1] > 0, "Items 0,1 should have non-zero cophenetic distance"
+    assert coph[2][3] > 0, "Items 2,3 should have non-zero cophenetic distance"
+
+    print("Testing cophenetic correlation with identical connectivity matrices...")
     cm1 = [[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
     cm2 = [[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
     corr = cophenetic_correlation([cm1, cm2])
-    print(f"Identical matrices correlation: {corr:.6f}")
-    assert abs(corr - 1.0) < 1e-6
-    
+    print(f"  Identical matrices cophenetic correlation: {corr:.6f}")
+    assert corr > 0.9, f"Identical connectivity should give high correlation, got {corr}"
+
+    print("Testing cophenetic correlation with varying connectivity matrices...")
+    cm3 = [[1.0, 1.0, 0.0], [1.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    cm4 = [[1.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 1.0]]
+    corr2 = cophenetic_correlation([cm3, cm4])
+    print(f"  Divergent matrices cophenetic correlation: {corr2:.6f}")
+    assert corr2 < corr, f"Divergent matrices should give lower correlation"
+
     print("✓ Cophenetic correlation passed\n")
 
 

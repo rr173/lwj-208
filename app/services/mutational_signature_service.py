@@ -52,7 +52,7 @@ def _build_count_matrix(
     db: Session,
     samples: List[models.Sample],
     reference: models.ReferenceSequence,
-) -> Tuple[List[List[int]], List[str], List[str]]:
+) -> Tuple[List[List[int]], List[str]]:
     n_samples = len(samples)
     count_matrix = create_empty_count_matrix(n_samples)
     ref_sequence = reference.sequence
@@ -84,14 +84,21 @@ def _build_count_matrix(
             except ValueError:
                 continue
 
-    sample_names = [s.name for s in samples]
-    return count_matrix, sample_names, ALL_96_MUTATION_TYPES
+    return count_matrix, ALL_96_MUTATION_TYPES
 
 
 def _count_matrix_to_float(
     count_matrix: List[List[int]]
 ) -> List[List[float]]:
     return [[float(x) for x in row] for row in count_matrix]
+
+
+def _lookup_sample_names(db: Session, sample_ids: List[int]) -> List[str]:
+    names = []
+    for sid in sample_ids:
+        sample = db.query(models.Sample).filter(models.Sample.id == sid).first()
+        names.append(sample.name if sample else f"sample_{sid}")
+    return names
 
 
 def build_mutational_spectrum(
@@ -110,13 +117,15 @@ def build_mutational_spectrum(
         models.MutationalSpectrumCache.cache_key == cache_key
     ).first()
 
+    sample_names = _lookup_sample_names(db, sorted_ids)
+
     if cached and not cached.is_stale and cached.data_hash == data_hash:
         cached.last_checked_at = func.now()
         db.commit()
         return schemas.MutationalSpectrumOut(
             reference_name=reference_name,
             sample_ids=cached.sample_ids,
-            sample_names=cached.sample_names,
+            sample_names=sample_names,
             mutation_types=cached.mutation_types,
             count_matrix=cached.count_matrix,
             cached=True,
@@ -124,13 +133,12 @@ def build_mutational_spectrum(
             created_at=cached.created_at,
         )
 
-    count_matrix, sample_names, mutation_types = _build_count_matrix(
+    count_matrix, mutation_types = _build_count_matrix(
         db, samples, reference
     )
 
     if cached:
         cached.count_matrix = count_matrix
-        cached.sample_names = sample_names
         cached.data_hash = data_hash
         cached.is_stale = False
         cached.last_checked_at = func.now()
@@ -178,10 +186,25 @@ def extract_signatures(
         models.NMFSignatureResult.cache_key == cache_key
     ).first()
 
+    sample_names = _lookup_sample_names(db, sorted_ids)
+
     if cached and not cached.is_stale and cached.data_hash == data_hash:
         cached.last_checked_at = func.now()
         db.commit()
-        return _nmf_cache_to_out(cached, reference_name)
+        return _build_nmf_out(
+            reference_name,
+            cached.k_value,
+            cached.sample_ids,
+            sample_names,
+            cached.signature_matrix,
+            cached.exposure_matrix,
+            cached.mutation_types,
+            cached.reconstruction_error,
+            cached.iterations,
+            True,
+            is_stale=cached.is_stale,
+            created_at=cached.created_at,
+        )
 
     spectrum_out = build_mutational_spectrum(db, sorted_ids, reference_name)
     V = _count_matrix_to_float(spectrum_out.count_matrix)
@@ -203,7 +226,6 @@ def extract_signatures(
         cached.exposure_matrix = exposure_matrix
         cached.reconstruction_error = error
         cached.iterations = iterations
-        cached.sample_names = spectrum_out.sample_names
         cached.mutation_types = spectrum_out.mutation_types
         cached.data_hash = data_hash
         cached.is_stale = False
@@ -218,7 +240,7 @@ def extract_signatures(
             signature_matrix=signature_matrix,
             exposure_matrix=exposure_matrix,
             mutation_types=spectrum_out.mutation_types,
-            sample_names=spectrum_out.sample_names,
+            sample_names=sample_names,
             reconstruction_error=error,
             iterations=iterations,
             data_hash=data_hash,
@@ -230,33 +252,13 @@ def extract_signatures(
         reference_name,
         k_value,
         sorted_ids,
-        spectrum_out.sample_names,
+        sample_names,
         signature_matrix,
         exposure_matrix,
         spectrum_out.mutation_types,
         error,
         iterations,
         False,
-    )
-
-
-def _nmf_cache_to_out(
-    cached: models.NMFSignatureResult,
-    reference_name: str,
-) -> schemas.NMFSignatureOut:
-    return _build_nmf_out(
-        reference_name,
-        cached.k_value,
-        cached.sample_ids,
-        cached.sample_names,
-        cached.signature_matrix,
-        cached.exposure_matrix,
-        cached.mutation_types,
-        cached.reconstruction_error,
-        cached.iterations,
-        True,
-        is_stale=cached.is_stale,
-        created_at=cached.created_at,
     )
 
 
@@ -324,10 +326,33 @@ def find_optimal_k_value(
         models.OptimalKResult.cache_key == cache_key
     ).first()
 
+    sample_names = _lookup_sample_names(db, sorted_ids)
+
     if cached and not cached.is_stale and cached.data_hash == data_hash:
         cached.last_checked_at = func.now()
         db.commit()
-        return _optimal_k_cache_to_out(cached, reference_name)
+        metrics = [
+            schemas.KMetricEntry(
+                k_value=k,
+                reconstruction_error=err,
+                cophenetic_correlation=corr,
+            )
+            for k, err, corr in zip(
+                cached.k_values,
+                cached.reconstruction_errors,
+                cached.cophenetic_correlations,
+            )
+        ]
+        return schemas.OptimalKOut(
+            reference_name=reference_name,
+            sample_ids=cached.sample_ids,
+            sample_names=sample_names,
+            metrics=metrics,
+            recommended_k=cached.recommended_k,
+            cached=True,
+            is_stale=cached.is_stale,
+            created_at=cached.created_at,
+        )
 
     spectrum_out = build_mutational_spectrum(db, sorted_ids, reference_name)
     V = _count_matrix_to_float(spectrum_out.count_matrix)
@@ -381,41 +406,12 @@ def find_optimal_k_value(
     return schemas.OptimalKOut(
         reference_name=reference_name,
         sample_ids=sorted_ids,
-        sample_names=spectrum_out.sample_names,
+        sample_names=sample_names,
         metrics=metrics,
         recommended_k=recommended_k,
         cached=False,
         is_stale=False,
         created_at=datetime.now(),
-    )
-
-
-def _optimal_k_cache_to_out(
-    cached: models.OptimalKResult,
-    reference_name: str,
-) -> schemas.OptimalKOut:
-    metrics = [
-        schemas.KMetricEntry(
-            k_value=k,
-            reconstruction_error=err,
-            cophenetic_correlation=corr,
-        )
-        for k, err, corr in zip(
-            cached.k_values,
-            cached.reconstruction_errors,
-            cached.cophenetic_correlations,
-        )
-    ]
-
-    return schemas.OptimalKOut(
-        reference_name=reference_name,
-        sample_ids=cached.sample_ids,
-        sample_names=[],
-        metrics=metrics,
-        recommended_k=cached.recommended_k,
-        cached=True,
-        is_stale=cached.is_stale,
-        created_at=cached.created_at,
     )
 
 
