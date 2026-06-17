@@ -3,7 +3,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import engine, Base
+from app.database import engine, Base, SessionLocal
 from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain, synteny, audit, mutational_signature, pipeline
 from app.api.websocket import router as ws_router
 from app.sample_data import init_sample_data
@@ -13,6 +13,30 @@ from app.services.mutational_signature_service import list_reference_signatures
 from app.audit import AuditLogMiddleware
 
 Base.metadata.create_all(bind=engine)
+
+
+def _migrate_pipeline_tables():
+    from sqlalchemy import text, inspect
+    inspector = inspect(engine)
+    with engine.connect() as conn:
+        exec_cols = [c["name"] for c in inspector.get_columns("pipeline_executions")]
+        if "template_snapshot" not in exec_cols:
+            conn.execute(text("ALTER TABLE pipeline_executions ADD COLUMN template_snapshot JSON"))
+        if "resume_count" not in exec_cols:
+            conn.execute(text("ALTER TABLE pipeline_executions ADD COLUMN resume_count INTEGER DEFAULT 0"))
+
+        step_cols = [c["name"] for c in inspector.get_columns("pipeline_step_executions")]
+        if "retry_count" not in step_cols:
+            conn.execute(text("ALTER TABLE pipeline_step_executions ADD COLUMN retry_count INTEGER DEFAULT 0"))
+        if "last_error" not in step_cols:
+            conn.execute(text("ALTER TABLE pipeline_step_executions ADD COLUMN last_error TEXT"))
+        conn.commit()
+
+
+try:
+    _migrate_pipeline_tables()
+except Exception:
+    pass
 
 app = FastAPI(
     title="Gene Sequence Alignment & Variant Annotation Service",

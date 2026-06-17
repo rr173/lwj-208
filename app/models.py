@@ -532,6 +532,8 @@ class PipelineExecution(Base):
     error_message = Column(Text, nullable=True)
     triggered_at = Column(DateTime(timezone=True), server_default=func.now())
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    template_snapshot = Column(JSON, nullable=True)
+    resume_count = Column(Integer, default=0)
 
     template = relationship("PipelineTemplate", back_populates="executions")
     step_executions = relationship("PipelineStepExecution", back_populates="execution", cascade="all, delete-orphan", order_by="PipelineStepExecution.step_index")
@@ -552,5 +554,7 @@ class PipelineStepExecution(Base):
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     duration_seconds = Column(Float, nullable=True)
+    retry_count = Column(Integer, default=0)
+    last_error = Column(Text, nullable=True)
 
     execution = relationship("PipelineExecution", back_populates="step_executions")

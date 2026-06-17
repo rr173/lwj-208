@@ -25,6 +25,23 @@ def init_database():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
+        from sqlalchemy import text, inspect
+        inspector = inspect(engine)
+
+        exec_cols = [c["name"] for c in inspector.get_columns("pipeline_executions")]
+        if "template_snapshot" not in exec_cols:
+            db.execute(text("ALTER TABLE pipeline_executions ADD COLUMN template_snapshot JSON"))
+        if "resume_count" not in exec_cols:
+            db.execute(text("ALTER TABLE pipeline_executions ADD COLUMN resume_count INTEGER DEFAULT 0"))
+
+        step_cols = [c["name"] for c in inspector.get_columns("pipeline_step_executions")]
+        if "retry_count" not in step_cols:
+            db.execute(text("ALTER TABLE pipeline_step_executions ADD COLUMN retry_count INTEGER DEFAULT 0"))
+        if "last_error" not in step_cols:
+            db.execute(text("ALTER TABLE pipeline_step_executions ADD COLUMN last_error TEXT"))
+
+        db.commit()
+
         existing = genome_service.get_reference_by_name(db, SAMPLE_REFERENCE_NAME)
         if not existing:
             ref_seq = build_sample_reference()
@@ -546,6 +563,486 @@ def test_list_step_types():
     print("✓ All expected step types are available")
 
 
+def test_retry_config_defaults():
+    separator("TEST 10: Retry Config Defaults")
+    db = SessionLocal()
+    try:
+        create_req = schemas.PipelineTemplateCreate(
+            name="test_retry_defaults",
+            description="Test default retry config",
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="step_no_retry",
+                    step_type="spectrum",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            from_step="initial.sample_ids"
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            from_step="initial.reference_name"
+                        )
+                    ]
+                )
+            ]
+        )
+        template = pipeline_service.create_pipeline_template(db, create_req)
+        step = template.steps[0]
+        assert step.get("retry_count", 0) == 0
+        assert step.get("retry_interval_seconds", 0) == 0
+        print("✓ Default retry_count=0 and retry_interval_seconds=0")
+
+        pipeline_service.delete_pipeline_template(db, template)
+    finally:
+        db.close()
+
+
+def test_retry_config_custom():
+    separator("TEST 11: Custom Retry Config")
+    db = SessionLocal()
+    try:
+        create_req = schemas.PipelineTemplateCreate(
+            name="test_retry_custom",
+            description="Test custom retry config",
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="step_with_retry",
+                    step_type="spectrum",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            from_step="initial.sample_ids"
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            from_step="initial.reference_name"
+                        )
+                    ],
+                    retry_count=3,
+                    retry_interval_seconds=2
+                )
+            ]
+        )
+        template = pipeline_service.create_pipeline_template(db, create_req)
+        step = template.steps[0]
+        assert step.get("retry_count") == 3
+        assert step.get("retry_interval_seconds") == 2
+        print("✓ Custom retry_count=3 and retry_interval_seconds=2 persisted correctly")
+
+        pipeline_service.delete_pipeline_template(db, template)
+    finally:
+        db.close()
+
+
+def test_retry_on_failure():
+    separator("TEST 12: Retry On Failure (monkey-patched)")
+    db = SessionLocal()
+    try:
+        call_count = {"n": 0}
+        original_execute_step = pipeline_service._execute_step
+
+        def flaky_execute_step(db, step_type, params):
+            call_count["n"] += 1
+            if call_count["n"] < 3:
+                raise ValueError(f"Simulated transient error (attempt {call_count['n']})")
+            return original_execute_step(db, step_type, params)
+
+        samples = sample_service.list_samples(db, limit=5)
+        sample_ids = [s.id for s in samples[:5]]
+
+        create_req = schemas.PipelineTemplateCreate(
+            name="test_retry_flaky",
+            description="Test retry with flaky step",
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="build_spectrum",
+                    step_type="spectrum",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            value=sample_ids
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            value=SAMPLE_REFERENCE_NAME
+                        )
+                    ],
+                    retry_count=3,
+                    retry_interval_seconds=0
+                )
+            ]
+        )
+
+        template = pipeline_service.create_pipeline_template(db, create_req)
+        print(f"✓ Created template with retry_count=3")
+
+        import unittest.mock as mock
+        with mock.patch.object(pipeline_service, "_execute_step", side_effect=flaky_execute_step):
+            execution = pipeline_service.execute_pipeline(
+                db, template, {"sample_ids": sample_ids, "reference_name": SAMPLE_REFERENCE_NAME}
+            )
+
+        print(f"  Execution status: {execution.status}")
+        print(f"  _execute_step called: {call_count['n']} times")
+
+        step_exec = execution.step_executions[0]
+        print(f"  Step status: {step_exec.status}, retry_count: {step_exec.retry_count}")
+        if step_exec.last_error:
+            print(f"  Last error: {step_exec.last_error}")
+
+        assert execution.status == "completed"
+        assert call_count["n"] == 3
+        assert step_exec.status == "completed"
+        assert step_exec.retry_count == 2
+        print("✓ Step succeeded after 2 retries (3 total calls)")
+        print(f"✓ retry_count recorded correctly: {step_exec.retry_count}")
+
+        pipeline_service.delete_pipeline_template(db, template)
+    finally:
+        db.close()
+
+
+def test_retry_exhausted():
+    separator("TEST 13: Retry Exhausted (all attempts fail)")
+    db = SessionLocal()
+    try:
+        call_count = {"n": 0}
+
+        def always_fail(db, step_type, params):
+            call_count["n"] += 1
+            raise ValueError(f"Permanent error (attempt {call_count['n']})")
+
+        create_req = schemas.PipelineTemplateCreate(
+            name="test_retry_exhausted",
+            description="Test when all retries fail",
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="failing_step",
+                    step_type="spectrum",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            value=[1, 2, 3]
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            value=SAMPLE_REFERENCE_NAME
+                        )
+                    ],
+                    retry_count=2,
+                    retry_interval_seconds=0
+                )
+            ]
+        )
+
+        template = pipeline_service.create_pipeline_template(db, create_req)
+        print(f"✓ Created template with retry_count=2 (3 total attempts)")
+
+        import unittest.mock as mock
+        with mock.patch.object(pipeline_service, "_execute_step", side_effect=always_fail):
+            execution = pipeline_service.execute_pipeline(
+                db, template, {"sample_ids": [1, 2, 3], "reference_name": SAMPLE_REFERENCE_NAME}
+            )
+
+        print(f"  Execution status: {execution.status}")
+        print(f"  Error message: {execution.error_message}")
+        print(f"  _execute_step called: {call_count['n']} times")
+
+        step_exec = execution.step_executions[0]
+        print(f"  Step status: {step_exec.status}, retry_count: {step_exec.retry_count}")
+        print(f"  Step last_error: {step_exec.last_error}")
+
+        assert execution.status == "failed"
+        assert call_count["n"] == 3
+        assert step_exec.status == "failed"
+        assert step_exec.retry_count == 2
+        assert "after 2 retries" in execution.error_message
+        print("✓ Pipeline correctly failed after exhausting all 3 attempts")
+        print("✓ 'after N retries' message included in error")
+
+        pipeline_service.delete_pipeline_template(db, template)
+    finally:
+        db.close()
+
+
+def test_resume_completed_rejected():
+    separator("TEST 14: Resume Completed Execution Rejected")
+    db = SessionLocal()
+    try:
+        samples = sample_service.list_samples(db, limit=5)
+        sample_ids = [s.id for s in samples[:5]]
+
+        create_req = schemas.PipelineTemplateCreate(
+            name="test_resume_reject_completed",
+            description="Test resume rejection for completed exec",
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="build_spectrum",
+                    step_type="spectrum",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            value=sample_ids
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            value=SAMPLE_REFERENCE_NAME
+                        )
+                    ]
+                )
+            ]
+        )
+
+        template = pipeline_service.create_pipeline_template(db, create_req)
+        execution = pipeline_service.execute_pipeline(
+            db, template, {"sample_ids": sample_ids, "reference_name": SAMPLE_REFERENCE_NAME}
+        )
+        assert execution.status == "completed"
+        print(f"✓ Pipeline completed: ID={execution.id}")
+
+        try:
+            pipeline_service.resume_pipeline_execution(db, execution)
+            print("✗ Should have rejected resuming completed execution")
+            assert False
+        except pipeline_service.PipelineResumeError as e:
+            print(f"✓ Correctly rejected completed execution: {e}")
+
+        pipeline_service.delete_pipeline_template(db, template)
+    finally:
+        db.close()
+
+
+def test_resume_template_changed_rejected():
+    separator("TEST 15: Resume Rejected When Template Modified")
+    db = SessionLocal()
+    try:
+        create_req = schemas.PipelineTemplateCreate(
+            name="test_resume_template_changed",
+            description="Template will be modified after exec",
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="bad_step",
+                    step_type="spectrum",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            value=[999999]
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            value="nonexistent_ref"
+                        )
+                    ]
+                ),
+                schemas.PipelineStepCreate(
+                    name="second_step",
+                    step_type="ld_analysis",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            value=SAMPLE_REFERENCE_NAME
+                        )
+                    ]
+                )
+            ]
+        )
+
+        template = pipeline_service.create_pipeline_template(db, create_req)
+        execution = pipeline_service.execute_pipeline(
+            db, template, {"sample_ids": [1], "reference_name": "x"}
+        )
+        assert execution.status == "failed"
+        print(f"✓ Pipeline failed as expected: ID={execution.id}")
+
+        update_req = schemas.PipelineTemplateUpdate(
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="renamed_step",
+                    step_type="nmf_extract",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            value=[1]
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            value=SAMPLE_REFERENCE_NAME
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="k_value",
+                            value=2
+                        )
+                    ]
+                )
+            ]
+        )
+        pipeline_service.update_pipeline_template(db, template, update_req)
+        print("✓ Template modified (step count & type changed)")
+
+        try:
+            pipeline_service.resume_pipeline_execution(db, execution)
+            print("✗ Should have rejected resume due to template change")
+            assert False
+        except pipeline_service.PipelineResumeError as e:
+            print(f"✓ Correctly rejected: {e}")
+            assert "Template has been modified" in str(e)
+
+        pipeline_service.delete_pipeline_template(db, template)
+    finally:
+        db.close()
+
+
+def test_resume_basic_workflow():
+    separator("TEST 16: Resume Basic Workflow")
+    db = SessionLocal()
+    try:
+        samples = sample_service.list_samples(db, limit=5)
+        sample_ids = [s.id for s in samples[:5]]
+
+        create_req = schemas.PipelineTemplateCreate(
+            name="test_resume_basic",
+            description="2-step pipeline: step1 succeeds, step2 fails then resumed",
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="build_spectrum",
+                    step_type="spectrum",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            from_step="initial.sample_ids"
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            from_step="initial.reference_name"
+                        )
+                    ]
+                ),
+                schemas.PipelineStepCreate(
+                    name="ld_analysis",
+                    step_type="ld_analysis",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            from_step="step_1.output.reference_name"
+                        )
+                    ]
+                )
+            ]
+        )
+
+        template = pipeline_service.create_pipeline_template(db, create_req)
+
+        original_execute = pipeline_service._execute_step
+        call_count = {"n": 0}
+
+        def flaky_execute(db, step_type, params):
+            call_count["n"] += 1
+            if step_type == "ld_analysis" and call_count["n"] < 3:
+                raise ValueError("Simulated LD error on first run")
+            return original_execute(db, step_type, params)
+
+        import unittest.mock as mock
+        with mock.patch.object(pipeline_service, "_execute_step", side_effect=flaky_execute):
+            execution = pipeline_service.execute_pipeline(
+                db, template,
+                {"sample_ids": sample_ids, "reference_name": SAMPLE_REFERENCE_NAME}
+            )
+
+        assert execution.status == "failed", f"Expected failed, got {execution.status}"
+        assert len(execution.step_executions) == 2
+        assert execution.step_executions[0].status == "completed"
+        assert execution.step_executions[1].status == "failed"
+        print(f"✓ First run: step1 completed, step2 failed (as simulated)")
+        print(f"  Step1 output summary: {execution.step_executions[0].output_summary}")
+        orig_step1_duration = execution.step_executions[0].duration_seconds
+        orig_step1_output = execution.step_executions[0].output_summary
+        print(f"  Step1 duration: {orig_step1_duration:.2f}s")
+        print(f"  _execute_step total calls in first run: {call_count['n']}")
+
+        resumed_exec, skipped, resumed_from = pipeline_service.resume_pipeline_execution(
+            db, execution
+        )
+
+        print(f"  Resumed from step: {resumed_from}")
+        print(f"  Skipped completed steps: {skipped}")
+        print(f"  Resume count: {resumed_exec.resume_count}")
+        print(f"  Final status: {resumed_exec.status}")
+        print(f"  Step1 status: {resumed_exec.step_executions[0].status}")
+        print(f"  Step2 status: {resumed_exec.step_executions[1].status}")
+        print(f"  Total _execute_step calls overall: {call_count['n']}")
+
+        assert resumed_exec.status == "completed"
+        assert resumed_from == 2
+        assert skipped == 1
+        assert resumed_exec.resume_count == 1
+        assert resumed_exec.step_executions[0].status == "completed"
+        assert resumed_exec.step_executions[0].output_summary == orig_step1_output
+        assert resumed_exec.step_executions[0].duration_seconds == orig_step1_duration
+        assert resumed_exec.step_executions[1].status == "completed"
+        print("✓ Resume succeeded: step1 reused, step2 executed successfully")
+        print("✓ Step1 output & duration unchanged (not re-executed)")
+
+        pipeline_service.delete_pipeline_template(db, template)
+    finally:
+        db.close()
+
+
+def test_resume_idempotent_all_completed():
+    separator("TEST 17: Resume Idempotent - All Steps Already Done")
+    db = SessionLocal()
+    try:
+        samples = sample_service.list_samples(db, limit=5)
+        sample_ids = [s.id for s in samples[:5]]
+
+        create_req = schemas.PipelineTemplateCreate(
+            name="test_resume_idempotent",
+            description="Single step that succeeds",
+            steps=[
+                schemas.PipelineStepCreate(
+                    name="build_spectrum",
+                    step_type="spectrum",
+                    input_params=[
+                        schemas.PipelineStepInputParam(
+                            name="sample_ids",
+                            value=sample_ids
+                        ),
+                        schemas.PipelineStepInputParam(
+                            name="reference_name",
+                            value=SAMPLE_REFERENCE_NAME
+                        )
+                    ]
+                )
+            ]
+        )
+
+        template = pipeline_service.create_pipeline_template(db, create_req)
+        execution = pipeline_service.execute_pipeline(
+            db, template, {"sample_ids": sample_ids, "reference_name": SAMPLE_REFERENCE_NAME}
+        )
+        assert execution.status == "completed"
+
+        db.query(models.PipelineExecution).filter(
+            models.PipelineExecution.id == execution.id
+        ).update({"status": "failed"})
+        db.commit()
+        db.refresh(execution)
+        print("✓ Manually set execution status to 'failed' for testing")
+
+        resumed_exec, skipped, resumed_from = pipeline_service.resume_pipeline_execution(
+            db, execution
+        )
+
+        assert resumed_exec.status == "completed"
+        assert skipped == 1
+        print(f"✓ Resume corrected status to 'completed' without re-running")
+        print(f"  Skipped steps: {skipped}, resumed_from: {resumed_from}")
+
+        pipeline_service.delete_pipeline_template(db, template)
+    finally:
+        db.close()
+
+
 def cleanup_test_templates():
     separator("CLEANUP")
     db = SessionLocal()
@@ -578,6 +1075,14 @@ if __name__ == "__main__":
         test_pipeline_execution()
         test_pipeline_skip_condition()
         test_pipeline_failure()
+        test_retry_config_defaults()
+        test_retry_config_custom()
+        test_retry_on_failure()
+        test_retry_exhausted()
+        test_resume_completed_rejected()
+        test_resume_template_changed_rejected()
+        test_resume_basic_workflow()
+        test_resume_idempotent_all_completed()
 
         print("\n" + "="*60)
         print("  ALL TESTS COMPLETED")

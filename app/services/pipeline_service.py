@@ -1,6 +1,9 @@
 import re
 import time
 import signal
+import copy
+import hashlib
+import json
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
@@ -40,6 +43,10 @@ STEP_SERVICE_MAP = {
 
 
 class PipelineTimeoutError(Exception):
+    pass
+
+
+class PipelineResumeError(Exception):
     pass
 
 
@@ -230,6 +237,159 @@ def _execute_step(
     return service_func(db, **params)
 
 
+def _get_template_signature(steps: List[Dict[str, Any]]) -> str:
+    signature_data = [
+        {
+            "step_index": i + 1,
+            "step_type": s.get("step_type"),
+            "step_name": s.get("name"),
+        }
+        for i, s in enumerate(steps)
+    ]
+    raw = json.dumps(signature_data, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _verify_template_consistency(
+    snapshot_steps: List[Dict[str, Any]],
+    current_steps: List[Dict[str, Any]]
+) -> None:
+    if len(snapshot_steps) != len(current_steps):
+        raise PipelineResumeError(
+            f"Template has been modified: step count changed "
+            f"({len(snapshot_steps)} -> {len(current_steps)}). Resume aborted."
+        )
+    for i, (snap_step, curr_step) in enumerate(zip(snapshot_steps, current_steps)):
+        idx = i + 1
+        if snap_step.get("step_type") != curr_step.get("step_type"):
+            raise PipelineResumeError(
+                f"Template has been modified: step {idx} type changed "
+                f"({snap_step.get('step_type')} -> {curr_step.get('step_type')}). Resume aborted."
+            )
+        if snap_step.get("name") != curr_step.get("name"):
+            raise PipelineResumeError(
+                f"Template has been modified: step {idx} name changed "
+                f"('{snap_step.get('name')}' -> '{curr_step.get('name')}'). Resume aborted."
+            )
+
+
+def _run_single_step_with_retry(
+    db: Session,
+    step_config: Dict[str, Any],
+    step_execution: models.PipelineStepExecution,
+    step_outputs: Dict[str, Any],
+    initial_params: Dict[str, Any],
+    execution: models.PipelineExecution,
+    pipeline_start_time: float,
+) -> Tuple[bool, Optional[Dict[str, Any]], Optional[float]]:
+    step_index = step_execution.step_index
+    step_key = f"step_{step_index}"
+    step_name = step_config.get("name", f"Step {step_index}")
+    step_type = step_config["step_type"]
+    max_retries = step_config.get("retry_count", 0) or 0
+    retry_interval = step_config.get("retry_interval_seconds", 0) or 0
+
+    attempt = 0
+    last_error = None
+    step_duration = None
+
+    while attempt <= max_retries:
+        if attempt > 0 and retry_interval > 0:
+            time.sleep(retry_interval)
+
+        step_execution.status = "running"
+        step_execution.started_at = datetime.utcnow()
+        step_execution.retry_count = attempt
+        db.commit()
+
+        condition = step_config.get("condition")
+        if condition and attempt == 0:
+            try:
+                should_execute = _evaluate_condition(condition["expression"], step_outputs)
+                if not should_execute:
+                    step_execution.status = "skipped"
+                    step_execution.completed_at = datetime.utcnow()
+                    step_execution.duration_seconds = 0
+                    db.commit()
+                    return True, None, 0.0
+            except Exception as e:
+                last_error = f"Condition evaluation failed: {str(e)}"
+                step_execution.last_error = last_error
+                step_execution.status = "failed"
+                step_execution.error_message = last_error
+                step_execution.completed_at = datetime.utcnow()
+                step_execution.duration_seconds = (
+                    step_execution.completed_at - step_execution.started_at
+                ).total_seconds() if step_execution.started_at else 0
+                execution.status = "failed"
+                execution.error_message = f"Step {step_index} ({step_name}) condition failed: {str(e)}"
+                execution.completed_at = datetime.utcnow()
+                execution.total_duration_seconds = time.time() - pipeline_start_time
+                db.commit()
+                return False, None, step_execution.duration_seconds
+
+        try:
+            resolved_params = _resolve_step_params(step_config, step_outputs, initial_params)
+            step_execution.input_params = resolved_params
+            db.commit()
+
+            step_start_time = time.time()
+            output = _execute_step(db, step_type, resolved_params)
+            step_duration = time.time() - step_start_time
+
+            output_dict = _output_to_dict(output)
+            output_summary = _summarize_output(step_type, output)
+            step_result = {
+                "output": output_dict,
+                "summary": output_summary
+            }
+
+            step_execution.status = "completed"
+            step_execution.output_summary = output_summary
+            step_execution.completed_at = datetime.utcnow()
+            step_execution.duration_seconds = step_duration
+            step_execution.last_error = None
+            db.commit()
+
+            return True, step_result, step_duration
+
+        except PipelineTimeoutError as e:
+            last_error = str(e)
+            step_execution.last_error = last_error
+            step_execution.status = "failed"
+            step_execution.error_message = last_error
+            step_execution.completed_at = datetime.utcnow()
+            step_execution.duration_seconds = (
+                step_execution.completed_at - step_execution.started_at
+            ).total_seconds() if step_execution.started_at else 0
+            execution.status = "failed"
+            execution.error_message = last_error
+            execution.completed_at = datetime.utcnow()
+            execution.total_duration_seconds = time.time() - pipeline_start_time
+            db.commit()
+            return False, None, step_execution.duration_seconds
+
+        except Exception as e:
+            last_error = str(e)
+            step_execution.last_error = last_error
+            attempt += 1
+            db.commit()
+
+    step_execution.status = "failed"
+    step_execution.error_message = last_error
+    step_execution.completed_at = datetime.utcnow()
+    step_execution.duration_seconds = (
+        step_execution.completed_at - step_execution.started_at
+    ).total_seconds() if step_execution.started_at else 0
+    execution.status = "failed"
+    retry_info = f" (after {max_retries} retries)" if max_retries > 0 else ""
+    execution.error_message = f"Step {step_index} ({step_name}) failed{retry_info}: {last_error}"
+    execution.completed_at = datetime.utcnow()
+    execution.total_duration_seconds = time.time() - pipeline_start_time
+    db.commit()
+    return False, None, step_execution.duration_seconds
+
+
 def create_pipeline_template(
     db: Session,
     request: schemas.PipelineTemplateCreate
@@ -318,20 +478,23 @@ def execute_pipeline(
     initial_params: Dict[str, Any]
 ) -> models.PipelineExecution:
     steps = template.steps
-    step_outputs = {}
+    step_outputs: Dict[str, Any] = {}
     step_executions = []
+
+    template_snapshot = copy.deepcopy(steps)
 
     execution = models.PipelineExecution(
         template_id=template.id,
         initial_params=initial_params,
         status="running",
+        template_snapshot=template_snapshot,
+        resume_count=0,
     )
     db.add(execution)
     db.flush()
 
     for i, step_config in enumerate(steps):
         step_index = i + 1
-        step_key = f"step_{step_index}"
         step_name = step_config.get("name", f"Step {step_index}")
         step_type = step_config["step_type"]
 
@@ -342,6 +505,8 @@ def execute_pipeline(
             step_name=step_name,
             input_params={},
             status="pending",
+            retry_count=0,
+            last_error=None,
         )
         db.add(step_execution)
         db.flush()
@@ -358,90 +523,26 @@ def execute_pipeline(
         for i, step_config in enumerate(steps):
             step_index = i + 1
             step_key = f"step_{step_index}"
-            step_name = step_config.get("name", f"Step {step_index}")
-            step_type = step_config["step_type"]
             step_execution = step_executions[i]
 
             if execution.status != "running":
                 break
 
-            step_execution.status = "running"
-            step_execution.started_at = datetime.utcnow()
-            db.commit()
+            success, step_result, _ = _run_single_step_with_retry(
+                db=db,
+                step_config=step_config,
+                step_execution=step_execution,
+                step_outputs=step_outputs,
+                initial_params=initial_params,
+                execution=execution,
+                pipeline_start_time=pipeline_start_time,
+            )
 
-            condition = step_config.get("condition")
-            if condition:
-                try:
-                    should_execute = _evaluate_condition(condition["expression"], step_outputs)
-                    if not should_execute:
-                        step_execution.status = "skipped"
-                        step_execution.completed_at = datetime.utcnow()
-                        step_execution.duration_seconds = 0
-                        db.commit()
-                        continue
-                except Exception as e:
-                    step_execution.status = "failed"
-                    step_execution.error_message = f"Condition evaluation failed: {str(e)}"
-                    step_execution.completed_at = datetime.utcnow()
-                    step_execution.duration_seconds = (
-                        step_execution.completed_at - step_execution.started_at
-                    ).total_seconds() if step_execution.started_at else 0
-                    execution.status = "failed"
-                    execution.error_message = f"Step {step_index} ({step_name}) condition failed: {str(e)}"
-                    execution.completed_at = datetime.utcnow()
-                    execution.total_duration_seconds = time.time() - pipeline_start_time
-                    db.commit()
-                    break
-
-            try:
-                resolved_params = _resolve_step_params(step_config, step_outputs, initial_params)
-                step_execution.input_params = resolved_params
-                db.commit()
-
-                step_start_time = time.time()
-                output = _execute_step(db, step_type, resolved_params)
-                step_duration = time.time() - step_start_time
-
-                output_dict = _output_to_dict(output)
-                output_summary = _summarize_output(step_type, output)
-                step_outputs[step_key] = {
-                    "output": output_dict,
-                    "summary": output_summary
-                }
-
-                step_execution.status = "completed"
-                step_execution.output_summary = _summarize_output(step_type, output)
-                step_execution.completed_at = datetime.utcnow()
-                step_execution.duration_seconds = step_duration
-                db.commit()
-
-            except PipelineTimeoutError as e:
-                step_execution.status = "failed"
-                step_execution.error_message = str(e)
-                step_execution.completed_at = datetime.utcnow()
-                step_execution.duration_seconds = (
-                    step_execution.completed_at - step_execution.started_at
-                ).total_seconds() if step_execution.started_at else 0
-                execution.status = "failed"
-                execution.error_message = str(e)
-                execution.completed_at = datetime.utcnow()
-                execution.total_duration_seconds = time.time() - pipeline_start_time
-                db.commit()
+            if not success:
                 break
 
-            except Exception as e:
-                step_execution.status = "failed"
-                step_execution.error_message = str(e)
-                step_execution.completed_at = datetime.utcnow()
-                step_execution.duration_seconds = (
-                    step_execution.completed_at - step_execution.started_at
-                ).total_seconds() if step_execution.started_at else 0
-                execution.status = "failed"
-                execution.error_message = f"Step {step_index} ({step_name}) failed: {str(e)}"
-                execution.completed_at = datetime.utcnow()
-                execution.total_duration_seconds = time.time() - pipeline_start_time
-                db.commit()
-                break
+            if step_result is not None:
+                step_outputs[step_key] = step_result
 
         if execution.status == "running":
             execution.status = "completed"
@@ -454,6 +555,146 @@ def execute_pipeline(
 
     db.refresh(execution)
     return execution
+
+
+def resume_pipeline_execution(
+    db: Session,
+    execution: models.PipelineExecution,
+) -> Tuple[models.PipelineExecution, int, Optional[int]]:
+    template = execution.template
+    if template is None:
+        raise PipelineResumeError("Associated pipeline template no longer exists")
+
+    if execution.template_snapshot is None:
+        raise PipelineResumeError(
+            "Original template snapshot is missing. Cannot verify template consistency. "
+            "Please re-run the pipeline from scratch."
+        )
+
+    _verify_template_consistency(execution.template_snapshot, template.steps)
+
+    if execution.status not in ("failed", "pending"):
+        raise PipelineResumeError(
+            f"Cannot resume execution with status '{execution.status}'. "
+            f"Only 'failed' or 'pending' executions can be resumed."
+        )
+
+    snapshot_steps = execution.template_snapshot
+    step_executions = list(execution.step_executions)
+
+    if len(step_executions) != len(snapshot_steps):
+        raise PipelineResumeError(
+            f"Step execution count mismatch with template snapshot "
+            f"({len(step_executions)} vs {len(snapshot_steps)})."
+        )
+
+    step_outputs: Dict[str, Any] = {}
+    start_step_index = None
+    skipped_count = 0
+
+    for i, (step_config, step_exec) in enumerate(zip(snapshot_steps, step_executions)):
+        idx = i + 1
+        step_key = f"step_{idx}"
+        if step_exec.status == "completed" and step_exec.output_summary is not None:
+            step_outputs[step_key] = {
+                "output": step_exec.output_summary,
+                "summary": step_exec.output_summary,
+            }
+            if step_exec.input_params:
+                for pk, pv in step_exec.output_summary.items():
+                    pass
+            skipped_count += 1
+            continue
+        if step_exec.status == "skipped":
+            skipped_count += 1
+            continue
+        if step_exec.status in ("failed", "pending"):
+            if start_step_index is None:
+                start_step_index = idx
+            break
+
+    if start_step_index is None:
+        if execution.status == "completed":
+            return execution, skipped_count, None
+        all_completed = all(se.status in ("completed", "skipped") for se in step_executions)
+        if all_completed:
+            execution.status = "completed"
+            execution.error_message = None
+            db.commit()
+            db.refresh(execution)
+            return execution, skipped_count, None
+        start_step_index = 1
+        for i, se in enumerate(step_executions):
+            if se.status not in ("completed", "skipped"):
+                start_step_index = i + 1
+                break
+
+    execution.status = "running"
+    execution.error_message = None
+    execution.resume_count = (execution.resume_count or 0) + 1
+    db.commit()
+
+    signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(PIPELINE_TIMEOUT_SECONDS)
+
+    pipeline_start_time = time.time()
+
+    try:
+        for i in range(start_step_index - 1, len(snapshot_steps)):
+            step_config = snapshot_steps[i]
+            step_execution = step_executions[i]
+            step_index = i + 1
+            step_key = f"step_{step_index}"
+
+            if execution.status != "running":
+                break
+
+            if step_execution.status == "completed" and step_execution.output_summary is not None:
+                if step_key not in step_outputs:
+                    step_outputs[step_key] = {
+                        "output": step_execution.output_summary,
+                        "summary": step_execution.output_summary,
+                    }
+                continue
+            if step_execution.status == "skipped":
+                continue
+
+            success, step_result, _ = _run_single_step_with_retry(
+                db=db,
+                step_config=step_config,
+                step_execution=step_execution,
+                step_outputs=step_outputs,
+                initial_params=execution.initial_params,
+                execution=execution,
+                pipeline_start_time=pipeline_start_time,
+            )
+
+            if not success:
+                break
+
+            if step_result is not None:
+                step_outputs[step_key] = step_result
+
+        if execution.status == "running":
+            execution.status = "completed"
+            execution.completed_at = datetime.utcnow()
+            if execution.total_duration_seconds is None:
+                execution.total_duration_seconds = time.time() - pipeline_start_time
+            else:
+                execution.total_duration_seconds += time.time() - pipeline_start_time
+            db.commit()
+        else:
+            if execution.total_duration_seconds is None:
+                execution.total_duration_seconds = time.time() - pipeline_start_time
+            else:
+                execution.total_duration_seconds += time.time() - pipeline_start_time
+            db.commit()
+
+    finally:
+        signal.alarm(0)
+
+    db.refresh(execution)
+    return execution, skipped_count, start_step_index
 
 
 def get_pipeline_executions(

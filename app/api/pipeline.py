@@ -96,6 +96,8 @@ def execute_pipeline(
             error_message=execution.error_message,
             triggered_at=execution.triggered_at,
             completed_at=execution.completed_at,
+            template_snapshot=execution.template_snapshot,
+            resume_count=execution.resume_count or 0,
             step_executions=[
                 schemas.PipelineStepExecutionOut(
                     step_index=se.step_index,
@@ -108,11 +110,63 @@ def execute_pipeline(
                     started_at=se.started_at,
                     completed_at=se.completed_at,
                     duration_seconds=se.duration_seconds,
+                    retry_count=se.retry_count or 0,
+                    last_error=se.last_error,
                 )
                 for se in execution.step_executions
             ],
         )
         return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/executions/{execution_id}/resume", response_model=schemas.PipelineResumeResponse)
+def resume_pipeline_execution(
+    execution_id: int,
+    db: Session = Depends(get_db),
+):
+    execution = pipeline_service.get_pipeline_execution(db, execution_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="Pipeline execution not found")
+    try:
+        resumed_execution, skipped_count, resumed_from = pipeline_service.resume_pipeline_execution(
+            db, execution
+        )
+        result = schemas.PipelineResumeResponse(
+            id=resumed_execution.id,
+            template_id=resumed_execution.template_id,
+            template_name=resumed_execution.template.name,
+            status=resumed_execution.status,
+            initial_params=resumed_execution.initial_params,
+            total_duration_seconds=resumed_execution.total_duration_seconds,
+            error_message=resumed_execution.error_message,
+            triggered_at=resumed_execution.triggered_at,
+            completed_at=resumed_execution.completed_at,
+            resume_count=resumed_execution.resume_count or 0,
+            resumed_from_step=resumed_from,
+            skipped_completed_steps=skipped_count,
+            step_executions=[
+                schemas.PipelineStepExecutionOut(
+                    step_index=se.step_index,
+                    step_name=se.step_name,
+                    step_type=se.step_type,
+                    status=se.status,
+                    input_params=se.input_params,
+                    output_summary=se.output_summary,
+                    error_message=se.error_message,
+                    started_at=se.started_at,
+                    completed_at=se.completed_at,
+                    duration_seconds=se.duration_seconds,
+                    retry_count=se.retry_count or 0,
+                    last_error=se.last_error,
+                )
+                for se in resumed_execution.step_executions
+            ],
+        )
+        return result
+    except pipeline_service.PipelineResumeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -147,6 +201,7 @@ def get_pipeline_executions(
                     error_message=e.error_message,
                     triggered_at=e.triggered_at,
                     completed_at=e.completed_at,
+                    resume_count=e.resume_count or 0,
                 )
                 for e in executions
             ],
@@ -173,6 +228,8 @@ def get_pipeline_execution(
         error_message=execution.error_message,
         triggered_at=execution.triggered_at,
         completed_at=execution.completed_at,
+        template_snapshot=execution.template_snapshot,
+        resume_count=execution.resume_count or 0,
         step_executions=[
             schemas.PipelineStepExecutionOut(
                 step_index=se.step_index,
@@ -185,6 +242,8 @@ def get_pipeline_execution(
                 started_at=se.started_at,
                 completed_at=se.completed_at,
                 duration_seconds=se.duration_seconds,
+                retry_count=se.retry_count or 0,
+                last_error=se.last_error,
             )
             for se in execution.step_executions
         ],

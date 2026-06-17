@@ -1119,6 +1119,8 @@ class PipelineStepCreate(BaseModel):
     step_type: str = Field(..., pattern="|".join(PIPELINE_STEP_TYPES))
     input_params: List[PipelineStepInputParam] = []
     condition: Optional[PipelineStepCondition] = None
+    retry_count: int = Field(0, ge=0, le=10, description="Number of automatic retries on failure (default 0)")
+    retry_interval_seconds: int = Field(0, ge=0, le=3600, description="Seconds to wait between retries (default 0)")
 
 
 class PipelineStepOut(BaseModel):
@@ -1126,6 +1128,8 @@ class PipelineStepOut(BaseModel):
     step_type: str
     input_params: List[PipelineStepInputParam]
     condition: Optional[PipelineStepCondition] = None
+    retry_count: int = 0
+    retry_interval_seconds: int = 0
 
 
 class PipelineTemplateCreate(BaseModel):
@@ -1204,6 +1208,8 @@ class PipelineStepExecutionOut(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     duration_seconds: Optional[float] = None
+    retry_count: int = 0
+    last_error: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -1220,6 +1226,8 @@ class PipelineExecutionOut(BaseModel):
     triggered_at: datetime
     completed_at: Optional[datetime] = None
     step_executions: List[PipelineStepExecutionOut] = []
+    template_snapshot: Optional[List[Dict[str, Any]]] = None
+    resume_count: int = 0
 
     class Config:
         from_attributes = True
@@ -1235,6 +1243,23 @@ class PipelineExecutionSummaryOut(BaseModel):
     error_message: Optional[str] = None
     triggered_at: datetime
     completed_at: Optional[datetime] = None
+    resume_count: int = 0
 
     class Config:
         from_attributes = True
+
+
+class PipelineResumeResponse(BaseModel):
+    id: int
+    template_id: int
+    template_name: str
+    status: str
+    initial_params: Dict[str, Any]
+    total_duration_seconds: Optional[float] = None
+    error_message: Optional[str] = None
+    triggered_at: datetime
+    completed_at: Optional[datetime] = None
+    step_executions: List[PipelineStepExecutionOut] = []
+    resume_count: int = 0
+    resumed_from_step: Optional[int] = None
+    skipped_completed_steps: int = 0
