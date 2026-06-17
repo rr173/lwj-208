@@ -426,3 +426,76 @@ class AuditLog(Base):
         Index("idx_audit_resource", "resource_type", "resource_id"),
         Index("idx_audit_timestamp", "timestamp"),
     )
+
+
+class MutationalSpectrumCache(Base):
+    __tablename__ = "mutational_spectrum_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    sample_ids = Column(JSON, nullable=False)
+    reference_name = Column(String, nullable=False)
+    reference_id = Column(Integer, ForeignKey("reference_sequences.id"), nullable=False)
+    sample_names = Column(JSON, nullable=False)
+    mutation_types = Column(JSON, nullable=False)
+    count_matrix = Column(JSON, nullable=False)
+    data_hash = Column(String, nullable=False)
+    is_stale = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    reference = relationship("ReferenceSequence", foreign_keys=[reference_id])
+
+    __table_args__ = (
+        Index("idx_spectrum_cache_ref", "reference_id"),
+    )
+
+
+class NMFSignatureResult(Base):
+    __tablename__ = "nmf_signature_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    sample_ids = Column(JSON, nullable=False)
+    reference_name = Column(String, nullable=False)
+    k_value = Column(Integer, nullable=False)
+    signature_matrix = Column(JSON, nullable=False)
+    exposure_matrix = Column(JSON, nullable=False)
+    mutation_types = Column(JSON, nullable=False)
+    sample_names = Column(JSON, nullable=False)
+    reconstruction_error = Column(Float, nullable=False)
+    iterations = Column(Integer, nullable=False)
+    data_hash = Column(String, nullable=False)
+    is_stale = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class OptimalKResult(Base):
+    __tablename__ = "optimal_k_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, index=True, nullable=False)
+    sample_ids = Column(JSON, nullable=False)
+    reference_name = Column(String, nullable=False)
+    k_values = Column(JSON, nullable=False)
+    reconstruction_errors = Column(JSON, nullable=False)
+    cophenetic_correlations = Column(JSON, nullable=False)
+    recommended_k = Column(Integer, nullable=False)
+    data_hash = Column(String, nullable=False)
+    is_stale = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    last_checked_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReferenceSignature(Base):
+    __tablename__ = "reference_signatures"
+
+    id = Column(Integer, primary_key=True, index=True)
+    signature_id = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    etiology = Column(String, nullable=False)
+    mutation_types = Column(JSON, nullable=False)
+    probabilities = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -4,11 +4,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import engine, Base
-from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain, synteny, audit
+from app.api import reference, alignment, batch, stats, sample, phylogeny, scoring, ld, primer, transmission, domain, synteny, audit, mutational_signature
 from app.api.websocket import router as ws_router
 from app.sample_data import init_sample_data
 from app.services.batch_service import task_manager
 from app.services.scoring_service import seed_default_rules
+from app.services.mutational_signature_service import list_reference_signatures
 from app.audit import AuditLogMiddleware
 
 Base.metadata.create_all(bind=engine)
@@ -43,6 +44,7 @@ app.include_router(domain.router)
 app.include_router(synteny.router)
 app.include_router(audit.router)
 app.include_router(ws_router)
+app.include_router(mutational_signature.router)
 
 
 @app.on_event("startup")
@@ -54,6 +56,7 @@ async def startup_event():
     db = SessionLocal()
     try:
         seed_default_rules(db)
+        list_reference_signatures(db)
     finally:
         db.close()
 

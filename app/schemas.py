@@ -919,3 +919,100 @@ class AuditLogListOut(BaseModel):
     page: int
     page_size: int
     items: List[AuditLogOut] = []
+
+
+class MutationalSpectrumRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=5, max_length=200)
+    reference_name: str = Field(..., min_length=1)
+
+
+class MutationalSpectrumOut(BaseModel):
+    reference_name: str
+    sample_ids: List[int]
+    sample_names: List[str]
+    mutation_types: List[str]
+    count_matrix: List[List[int]]
+    cached: bool = False
+    is_stale: bool = False
+    created_at: Optional[datetime] = None
+
+
+class NMFSignatureRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=5, max_length=200)
+    reference_name: str = Field(..., min_length=1)
+    k_value: int = Field(..., ge=2, le=10)
+
+
+class SignatureOut(BaseModel):
+    signature_index: int
+    mutation_types: List[str]
+    probabilities: List[float]
+
+
+class SampleExposureOut(BaseModel):
+    sample_id: int
+    sample_name: str
+    signature_exposures: List[float]
+
+
+class NMFSignatureOut(BaseModel):
+    reference_name: str
+    k_value: int
+    sample_ids: List[int]
+    sample_names: List[str]
+    signatures: List[SignatureOut]
+    exposures: List[SampleExposureOut]
+    reconstruction_error: float
+    iterations: int
+    cached: bool = False
+    is_stale: bool = False
+    created_at: Optional[datetime] = None
+
+
+class OptimalKRequest(BaseModel):
+    sample_ids: List[int] = Field(..., min_length=5, max_length=200)
+    reference_name: str = Field(..., min_length=1)
+
+
+class KMetricEntry(BaseModel):
+    k_value: int
+    reconstruction_error: float
+    cophenetic_correlation: float
+
+
+class OptimalKOut(BaseModel):
+    reference_name: str
+    sample_ids: List[int]
+    sample_names: List[str]
+    metrics: List[KMetricEntry]
+    recommended_k: int
+    cached: bool = False
+    is_stale: bool = False
+    created_at: Optional[datetime] = None
+
+
+class SignatureMatchRequest(BaseModel):
+    signature: List[float] = Field(..., min_length=96, max_length=96)
+
+
+class ReferenceSignatureOut(BaseModel):
+    signature_id: str
+    name: str
+    description: str
+    etiology: str
+
+
+class SignatureMatchOut(BaseModel):
+    reference_signature: ReferenceSignatureOut
+    cosine_similarity: float
+    is_reliable: bool
+
+
+class SignatureComparisonOut(BaseModel):
+    query_signature: List[float]
+    top_matches: List[SignatureMatchOut]
+
+
+class ReferenceSignatureListOut(BaseModel):
+    total: int
+    signatures: List[ReferenceSignatureOut] = []

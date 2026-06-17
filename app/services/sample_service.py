@@ -5,6 +5,7 @@ from datetime import datetime
 from app import models, schemas
 from app.services.phylogeny_service import invalidate_tree_results_for_samples
 from app.services.ld_service import invalidate_ld_results_for_sample
+from app.services.mutational_signature_service import invalidate_signature_results_for_samples
 
 
 def _variant_five_tuple_key(v) -> Tuple:
@@ -57,6 +58,7 @@ def delete_sample(db: Session, sample: models.Sample) -> None:
     db.commit()
     invalidate_tree_results_for_samples(db, [sample_id])
     invalidate_ld_results_for_sample(db, sample_id)
+    invalidate_signature_results_for_samples(db, [sample_id])
 
 
 def sample_to_out(db: Session, sample: models.Sample, with_detail: bool = False) -> schemas.SampleOut:
@@ -162,6 +164,7 @@ def rebuild_sample_spectrum(db: Session, sample_id: int) -> None:
     _invalidate_frequency_cache_for_sample(db, sample_id)
     invalidate_tree_results_for_samples(db, [sample_id])
     invalidate_ld_results_for_sample(db, sample_id)
+    invalidate_signature_results_for_samples(db, [sample_id])
 
 
 def link_alignments_to_sample(
