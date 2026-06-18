@@ -1,8 +1,19 @@
-from typing import List, Optional, Dict, Any, Tuple, Set
+from typing import List, Optional, Dict, Any, Tuple, Set, NamedTuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
 from app import models, schemas
+
+
+class _QCInternalResult(NamedTuple):
+    sample: models.Sample
+    active_rule_set: models.QCRuleSet
+    rules: List[models.QCRule]
+    spectrum_rows: List[models.SampleVariantSpectrum]
+    pass_count: int
+    fail_count: int
+    qc_results: List[schemas.VariantQCOut]
+    failed_rule_types: Dict[str, int]
 
 
 def create_rule_set(db: Session, data: schemas.QCRuleSetCreate) -> models.QCRuleSet:
@@ -248,7 +259,9 @@ def _evaluate_variant_against_rules(
     return passed, failed_rules
 
 
-def execute_qc_for_sample(db: Session, sample_id: int) -> schemas.SampleQCResultOut:
+def _run_qc_internal(
+    db: Session, sample_id: int
+) -> _QCInternalResult:
     sample = db.query(models.Sample).filter(models.Sample.id == sample_id).first()
     if not sample:
         raise ValueError(f"Sample {sample_id} not found")
@@ -279,6 +292,7 @@ def execute_qc_for_sample(db: Session, sample_id: int) -> schemas.SampleQCResult
     pass_count = 0
     fail_count = 0
     qc_results = []
+    failed_rule_types: Dict[str, int] = {}
 
     for row in spectrum_rows:
         passed, failed_rules = _evaluate_variant_against_rules(
@@ -297,6 +311,12 @@ def execute_qc_for_sample(db: Session, sample_id: int) -> schemas.SampleQCResult
             pass_count += 1
         else:
             fail_count += 1
+            seen_types = set()
+            for fr in failed_rules:
+                rt = fr.get("rule_type", "unknown")
+                if rt not in seen_types:
+                    seen_types.add(rt)
+                    failed_rule_types[rt] = failed_rule_types.get(rt, 0) + 1
 
         qc_result = models.VariantQCResult(
             sample_id=sample_id,
@@ -323,18 +343,31 @@ def execute_qc_for_sample(db: Session, sample_id: int) -> schemas.SampleQCResult
             is_stale=False,
         ))
 
-    db.commit()
-
-    return schemas.SampleQCResultOut(
-        sample_id=sample_id,
-        sample_name=sample.name,
-        rule_set_id=active_rule_set.id,
-        rule_set_name=active_rule_set.name,
-        total_variants=len(spectrum_rows),
+    return _QCInternalResult(
+        sample=sample,
+        active_rule_set=active_rule_set,
+        rules=rules,
+        spectrum_rows=spectrum_rows,
         pass_count=pass_count,
         fail_count=fail_count,
-        stale_count=0,
         qc_results=qc_results,
+        failed_rule_types=failed_rule_types,
+    )
+
+
+def execute_qc_for_sample(db: Session, sample_id: int) -> schemas.SampleQCResultOut:
+    result = _run_qc_internal(db, sample_id)
+    db.commit()
+    return schemas.SampleQCResultOut(
+        sample_id=sample_id,
+        sample_name=result.sample.name,
+        rule_set_id=result.active_rule_set.id,
+        rule_set_name=result.active_rule_set.name,
+        total_variants=len(result.spectrum_rows),
+        pass_count=result.pass_count,
+        fail_count=result.fail_count,
+        stale_count=0,
+        qc_results=result.qc_results,
         executed_at=datetime.now(),
     )
 
@@ -507,65 +540,26 @@ def execute_batch_qc(db: Session, sample_ids: List[int]) -> schemas.BatchQCResul
             continue
 
         try:
-            db.query(models.VariantQCResult).filter(
-                models.VariantQCResult.sample_id == sample_id
-            ).delete(synchronize_session=False)
-            db.flush()
+            savepoint = db.begin_nested()
+            try:
+                result = _run_qc_internal(db, sample_id)
+                savepoint.commit()
+            except Exception as inner_exc:
+                savepoint.rollback()
+                raise inner_exc
 
-            spectrum_rows = db.query(models.SampleVariantSpectrum).filter(
-                models.SampleVariantSpectrum.sample_id == sample_id
-            ).order_by(
-                models.SampleVariantSpectrum.reference_id,
-                models.SampleVariantSpectrum.ref_pos,
-            ).all()
+            for rt, count in result.failed_rule_types.items():
+                rule_type_fail_counts[rt] = rule_type_fail_counts.get(rt, 0) + count
 
-            pass_count = 0
-            fail_count = 0
-
-            for row in spectrum_rows:
-                passed, failed_rules = _evaluate_variant_against_rules(
-                    db,
-                    sample_id,
-                    row.reference_id,
-                    row.ref_pos,
-                    row.variant_type,
-                    row.ref_base,
-                    row.alt_base,
-                    rules,
-                )
-
-                status = "PASS" if passed else "FAIL"
-                if passed:
-                    pass_count += 1
-                else:
-                    fail_count += 1
-                    for fr in failed_rules:
-                        rt = fr.get("rule_type", "unknown")
-                        rule_type_fail_counts[rt] = rule_type_fail_counts.get(rt, 0) + 1
-
-                qc_result = models.VariantQCResult(
-                    sample_id=sample_id,
-                    reference_id=row.reference_id,
-                    ref_pos=row.ref_pos,
-                    variant_type=row.variant_type,
-                    ref_base=row.ref_base,
-                    alt_base=row.alt_base,
-                    rule_set_id=active_rule_set.id,
-                    qc_status=status,
-                    failed_rules=failed_rules,
-                    is_stale=False,
-                )
-                db.add(qc_result)
-
-            total_variants = len(spectrum_rows)
-            pass_rate = pass_count / total_variants if total_variants > 0 else 0.0
+            total_variants = len(result.spectrum_rows)
+            pass_rate = result.pass_count / total_variants if total_variants > 0 else 0.0
 
             sample_results.append(schemas.BatchQCSampleResult(
                 sample_id=sample_id,
                 sample_name=sample.name,
                 total_variants=total_variants,
-                pass_count=pass_count,
-                fail_count=fail_count,
+                pass_count=result.pass_count,
+                fail_count=result.fail_count,
                 pass_rate=round(pass_rate, 4),
                 error_message=None,
             ))
